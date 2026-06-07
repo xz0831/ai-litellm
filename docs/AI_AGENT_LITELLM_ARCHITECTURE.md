@@ -496,8 +496,7 @@ ai-litellm key status
 평문 키 흔적 점검:
 
 ```zsh
-rg -n "sk-or-v1-|sk-proj-|sk-ant-|OPENROUTER_API_KEY=.*sk-|LITELLM_MASTER_KEY=.*sk-|BRAVE_SEARCH_API_KEY\\s*=|master_key:\\s*sk-|api_key:\\s*sk-" \
-  ~/.zshrc ~/.local/bin ~/litellm_config.yaml ~/.codex/config.toml ~/.config/ai-litellm ~/.config/claude-litellm ~/.config/codex-litellm
+./scripts/check.zsh
 ```
 
 정상이라면 helper 코드, 주석 템플릿, vendor 예제 외에 실제 key 값이 나오면 안 된다.
