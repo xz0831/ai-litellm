@@ -21,7 +21,7 @@ for file in \
   jq empty "$file"
 done
 
-ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$repo_root/config/litellm_config.yaml"
+ruby -ryaml -e '(YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))' "$repo_root/config/litellm_config.yaml"
 
 if rg --glob '!scripts/check.zsh' -n 'sk-or-v1-|sk-proj-|sk-ant-|OPENROUTER_API_KEY=.*sk-|LITELLM_MASTER_KEY=.*sk-|BRAVE_SEARCH_API_KEY\s*=|master_key:\s*sk-|api_key:\s*sk-' "$repo_root"; then
   echo "Secret-like value found in repository" >&2

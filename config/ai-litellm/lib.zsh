@@ -106,7 +106,7 @@ ai_litellm_master_key() {
 
   local configured_key
   configured_key="$(ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 value = config.dig("general_settings", "master_key") rescue nil
 puts value if value
 ' "$AI_LITELLM_CONFIG" 2>/dev/null)"
@@ -136,7 +136,7 @@ ai_litellm_api_base_url() {
 
 ai_litellm_model_names() {
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 Array(config["model_list"]).each do |entry|
   name = entry["model_name"]
   puts name if name
@@ -152,7 +152,7 @@ ai_litellm_model_exists() {
 ai_litellm_model_backend() {
   local model_name="$1"
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
 models = Array(config["model_list"]).select { |entry| entry["model_name"] == target }
 backends = models.map { |entry| entry.dig("litellm_params", "model") }.compact
@@ -164,7 +164,7 @@ puts backends.join(",")
 ai_litellm_litellm_setting() {
   local key="$1"
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 value = config.dig("litellm_settings", ARGV[1]) rescue nil
 exit 1 if value.nil?
 puts value
@@ -202,7 +202,7 @@ ai_litellm_litellm_python() {
 ai_litellm_model_limits() {
   local model_name="$1"
   ruby -ryaml -rjson -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
 entry = Array(config["model_list"]).find { |e| e["model_name"] == target }
 exit 1 if entry.nil?
@@ -299,7 +299,7 @@ console.log(JSON.stringify({
 # this so the derivation logic lives in exactly one place.
 ai_litellm_limits_map() {
   ruby -ryaml -rjson -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 out = {}
 Array(config["model_list"]).each do |e|
   mi = e["model_info"] || {}
@@ -529,7 +529,7 @@ for (const [key, value] of Object.entries(descriptor.adapterConfig?.env || {})) 
 ai_litellm_config_env_refs() {
   [[ -f "$AI_LITELLM_CONFIG" ]] || return 1
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 seen = {}
 walk = nil
 walk = lambda do |o|
@@ -747,7 +747,7 @@ ai_litellm_render_opencode_config() {
 
   ruby -rjson -ryaml -e '
 descriptor = JSON.parse(File.read(ARGV[0]))
-registry = YAML.load_file(ARGV[1])
+registry = (YAML.load_file(ARGV[1], aliases: true) rescue YAML.load_file(ARGV[1]))
 api_base = ARGV[2]
 config_path = ARGV[3]
 provider = descriptor["provider"] || {}
@@ -1035,7 +1035,7 @@ ai_litellm_runtime_consistency() {
   [[ -f "$AI_LITELLM_SETTINGS" && -f "$AI_LITELLM_CONFIG" ]] || return 0
   ruby -ryaml -rjson -e '
 settings = JSON.parse(File.read(ARGV[0]))
-config = YAML.load_file(ARGV[1])
+config = (YAML.load_file(ARGV[1], aliases: true) rescue YAML.load_file(ARGV[1]))
 models = Array(config["model_list"])
 names = models.map { |e| e["model_name"] }.compact
 errs = []
@@ -1909,7 +1909,7 @@ ai_litellm_sync() {
 
 ai_litellm_doctor_local_route_uniqueness() {
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 names = Array(config["model_list"]).map { |entry| entry["model_name"] }.compact
 local_names = names.select { |name| name.start_with?("local-") }
 counts = Hash.new(0)
@@ -2091,7 +2091,7 @@ ai_litellm_doctor() {
 ai_litellm_limits_table() {
   local filter="$1"
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 filter = ARGV[1] || ""
 printf("%-22s %-12s %-12s\n", "model_name", "context", "output")
 Array(config["model_list"]).each do |e|
@@ -2266,7 +2266,7 @@ PY
 ai_litellm_model_reasoning_allowed_efforts() {
   local model="$1"
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
 entry = Array(config["model_list"]).find { |item| item["model_name"] == target }
 abort("Unknown LiteLLM model_name: #{target}") unless entry
@@ -2315,7 +2315,7 @@ ai_litellm_model_reasoning_update() {
 
   ruby -ryaml -e '
 path, mode, target, effort = ARGV
-config = YAML.load_file(path)
+config = (YAML.load_file(path, aliases: true) rescue YAML.load_file(path))
 entry = Array(config["model_list"]).find { |item| item["model_name"] == target }
 abort("Unknown LiteLLM model_name: #{target}") unless entry
 if mode == "set" && entry.dig("model_info", "supports_reasoning") != true
@@ -2534,7 +2534,7 @@ ai_litellm_harness_reasoning_table() {
   ruby -rjson -ryaml -e '
 require "set"
 
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 harness_dir = ARGV[1]
 filter = ARGV[2] || ""
 
@@ -2935,7 +2935,7 @@ def include_row?(row, filter)
   end
 end
 
-config = YAML.load_file(config_path)
+config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
 settings = read_json(settings_path) || {}
 registry = {}
 Array(config["model_list"]).each do |entry|
@@ -3445,7 +3445,7 @@ ai_litellm_context_codex_matches_bundled() {
 
 ai_litellm_context_pre_call_enabled() {
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 exit(config.dig("router_settings", "enable_pre_call_checks") == true ? 0 : 1)
 ' "$AI_LITELLM_CONFIG"
 }
@@ -3537,7 +3537,7 @@ ai_litellm_context_warn_omlx_policy_cap() {
   ruby -rjson -ryaml -e '
 settings_path, config_path = ARGV
 settings = JSON.parse(File.read(settings_path)) rescue {}
-config = YAML.load_file(config_path)
+config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
 registry = {}
 Array(config["model_list"]).each { |e| registry[e["model_name"]] = e if e["model_name"] }
 Array(settings["runtimes"] || {}).each do |name, rt|
@@ -3564,7 +3564,7 @@ end
 
 ai_litellm_context_warn_glm_output_source() {
   ruby -ryaml -e '
-config = YAML.load_file(ARGV[0])
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 Array(config["model_list"]).each do |e|
   next unless e.dig("litellm_params", "model").to_s == "openrouter/z-ai/glm-5.1"
   out = e.dig("model_info", "max_output_tokens")
