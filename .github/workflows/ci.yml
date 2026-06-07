@@ -33,7 +33,7 @@ jobs:
       - name: Install LiteLLM
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'litellm==1.81.14'
+          python -m pip install 'litellm[proxy]==1.81.14'
 
       - name: Verify LiteLLM token clamp behavior
         run: |
