@@ -15,9 +15,12 @@ export AI_LITELLM_LOG_FILE="${AI_LITELLM_LOG_FILE:-$AI_LITELLM_HOME/litellm.log}
 export AI_LITELLM_CONFIG_HASH_FILE="${AI_LITELLM_CONFIG_HASH_FILE:-$AI_LITELLM_HOME/litellm.config.sha256}"
 export AI_LITELLM_STARTED_AT_FILE="${AI_LITELLM_STARTED_AT_FILE:-$AI_LITELLM_HOME/litellm.started_at}"
 export AI_LITELLM_REASONING_OBS_FILE="${AI_LITELLM_REASONING_OBS_FILE:-$AI_LITELLM_HOME/reasoning-observations.json}"
-export AI_LITELLM_LEGACY_ENV="${AI_LITELLM_LEGACY_ENV:-$HOME/.config/claude-litellm/env}"
-export AI_LITELLM_LEGACY_PID_FILE="${AI_LITELLM_LEGACY_PID_FILE:-$HOME/.config/claude-litellm/litellm.pid}"
-export AI_LITELLM_LEGACY_LOG_FILE="${AI_LITELLM_LEGACY_LOG_FILE:-$HOME/.config/claude-litellm/litellm.log}"
+export AI_LITELLM_LEGACY_ENV="${AI_LITELLM_LEGACY_ENV:-$HOME/.config/ai-litellm/env}"
+export AI_LITELLM_LEGACY_PID_FILE="${AI_LITELLM_LEGACY_PID_FILE:-$HOME/.config/ai-litellm/litellm.pid}"
+export AI_LITELLM_LEGACY_LOG_FILE="${AI_LITELLM_LEGACY_LOG_FILE:-$HOME/.config/ai-litellm/litellm.log}"
+export AI_LITELLM_LEGACY_CLAUDE_ENV="${AI_LITELLM_LEGACY_CLAUDE_ENV:-$HOME/.config/claude-litellm/env}"
+export AI_LITELLM_LEGACY_CLAUDE_PID_FILE="${AI_LITELLM_LEGACY_CLAUDE_PID_FILE:-$HOME/.config/claude-litellm/litellm.pid}"
+export AI_LITELLM_LEGACY_CLAUDE_LOG_FILE="${AI_LITELLM_LEGACY_CLAUDE_LOG_FILE:-$HOME/.config/claude-litellm/litellm.log}"
 export OPENROUTER_KEYCHAIN_SERVICE="${OPENROUTER_KEYCHAIN_SERVICE:-openrouter-api-key}"
 export OPENROUTER_KEYCHAIN_ACCOUNT="${OPENROUTER_KEYCHAIN_ACCOUNT:-$USER}"
 export LITELLM_MASTER_KEYCHAIN_SERVICE="${LITELLM_MASTER_KEYCHAIN_SERVICE:-litellm-master-key}"
@@ -68,7 +71,7 @@ ai_litellm_json() {
 ai_litellm_env_value() {
   local key="$1"
   local env_file
-  for env_file in "$AI_LITELLM_ENV" "$AI_LITELLM_LEGACY_ENV"; do
+  for env_file in "$AI_LITELLM_ENV" "$AI_LITELLM_LEGACY_ENV" "$AI_LITELLM_LEGACY_CLAUDE_ENV"; do
     [[ -f "$env_file" ]] || continue
     (
       emulate -L zsh
@@ -1212,7 +1215,7 @@ ai_litellm_pid_from_file() {
 
 ai_litellm_active_pid_file() {
   local pid_file
-  for pid_file in "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE"; do
+  for pid_file in "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"; do
     ai_litellm_pid_from_file "$pid_file" >/dev/null 2>&1 || continue
     printf '%s\n' "$pid_file"
     return 0
@@ -1374,7 +1377,7 @@ ai_litellm_start() {
     return 1
   fi
 
-  rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE"
+  rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
   : > "$AI_LITELLM_LOG_FILE"
   chmod 600 "$AI_LITELLM_LOG_FILE" 2>/dev/null || true
 
@@ -1460,18 +1463,18 @@ ai_litellm_stop() {
 
   local pid_file pid
   pid_file="$(ai_litellm_active_pid_file 2>/dev/null)" || {
-    rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE"
+    rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
     echo "No ai-litellm managed LiteLLM process is running"
     return 0
   }
   pid="$(ai_litellm_pid_from_file "$pid_file")" || {
-    rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE"
+    rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
     echo "No ai-litellm managed LiteLLM process is running"
     return 0
   }
 
   kill "$pid" 2>/dev/null || true
-  rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE"
+  rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
   rm -f "$AI_LITELLM_CONFIG_HASH_FILE" "$AI_LITELLM_STARTED_AT_FILE"
   ai_litellm_clear_lock
   echo "LiteLLM stopped (pid $pid)"
@@ -1490,6 +1493,8 @@ ai_litellm_active_log_file() {
   }
   if [[ "$pid_file" == "$AI_LITELLM_LEGACY_PID_FILE" ]]; then
     printf '%s\n' "$AI_LITELLM_LEGACY_LOG_FILE"
+  elif [[ "$pid_file" == "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE" ]]; then
+    printf '%s\n' "$AI_LITELLM_LEGACY_CLAUDE_LOG_FILE"
   else
     printf '%s\n' "$AI_LITELLM_LOG_FILE"
   fi
