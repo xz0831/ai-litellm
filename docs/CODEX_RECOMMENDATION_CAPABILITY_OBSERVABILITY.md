@@ -149,3 +149,14 @@ honesty-first 아키텍처에서 가장 나쁜 상태는 "matrix가 1,008,384를
 - **F2 verified:** `scripts/verify_litellm_token_clamp.py`가 mock provider에서 상한 초과 요청의 `upstream_body=null`을 확인한다. production callback 검증은 400을 반환하고 provider에는 도달하지 않았다.
 - **F3 implemented:** repo seed `config/ai-litellm/context-observations.json`와 local state `state/ai-litellm/context-observations.json`을 합쳐 `ai-litellm context observations`와 `context matrix`가 읽는다. C1 `>=211580`과 GLM `>=204800` lower-bound 관측이 encoded-observed로 보존된다.
 - **F3 boundary:** full 1M honor는 아직 관측하지 않았다. matrix의 `>=211580`은 하한 증거이지 1M 확정값이 아니며, 추가 대형 probe는 `ai-litellm context probe record ...`로 명시 기록해야 한다.
+
+## 9. 검증에서 새로 잡힌 상호작용 (2026-06-08) — owned-interaction 문서화 + 선택 개선
+
+직전 라운드의 F2 가드레일을 $0 단위검증으로 확인하던 중(est input 300000/500000 → `BadRequestError` raise, provider 미도달) 드러난 **capacity↔cost 충돌**. 결함이 아니라 의도된 비용 정책이지만, 매트릭스 정직성을 위해 owned-interaction으로 박아 둔다.
+
+- **전역 가드레일 상한이 모델 윈도우를 under-cap한다.** `x-gateway-cost-guardrail.max_estimated_input_tokens=200000`은 **per-model이 아니라 전역**이다(출력 클램프는 `perModel`이 있으나 비용 가드레일 경로는 flat policy만 읽음 — `output_clamp.py`의 `gateway_cost_guardrail_decision`이 `_policy_value`로 단일 값 사용). 따라서 **per-request 유효 입력 = `min(model_window, 200000)`**: DeepSeek 1,048,576 / Kimi 262,144 / GLM ~202,752이 모두 200,000에서 잘린다. 매트릭스의 `BW=1,048,576`(DeepSeek 등)은 capability이지 **per-request 운영 한도가 아니다**(운영 한도는 200,000).
+  - **권고(필수, owned-doc):** `MODEL_HARNESS_CONTEXT_AUDIT_FOR_CODEX.md` 매트릭스/crux에 "effective per-request input = `min(window, 200000)` (cost guardrail)"를 명시. 이미 본 라운드에 반영함.
+  - **권고(선택, 개선):** 비용 가드레일에도 출력 클램프처럼 **`perModel` 입력 상한**을 추가하면, 타이트한 Kimi는 낮게·DeepSeek는 높게 둘 수 있어 1M capability를 덜 희생한다. 지금은 한 숫자가 전부를 누른다. files: `config/ai_litellm_callbacks/output_clamp.py`(`gateway_cost_guardrail_decision`에 `per_model`/`perModel` 조회), `config/litellm_config.yaml`(`x-gateway-cost-guardrail.perModel`).
+- **per-request 가드레일 ≠ 누적(loop) 지출 상한.** 현 가드레일은 단일 요청의 estimated token만 막는다. 다수 in-bound 요청이 누적되는 폭주 루프는 막지 못한다(누적 상한은 billing ledger/DB 필요 → 무DB 빌드에선 범위 밖). 문서의 "probes/loops" 표현 중 누적 loop는 미보호임을 **owned-limitation으로 명시**할 것.
+
+이 둘(전역 cap 문서화 + 선택적 per-model 가드레일, 누적-지출 한계 명시)까지 처리하면 §4·§7의 완성 정의 전부가 닫힌다.

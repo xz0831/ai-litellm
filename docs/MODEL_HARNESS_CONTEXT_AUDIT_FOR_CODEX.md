@@ -48,6 +48,15 @@ Important correction: the earlier GLM `204800` boundary observation is no longer
 `input + reserved_output`. `pre_call_checks` catches input overflow but **never** the input+output sum,
 and the gateway originally had **no output clamp**. The current architecture now has both harness reservations and a provider-facing output clamp; output-reservation size remains the binding safety lever.
 
+> **Owned interaction (2026-06-08): effective per-request input = `min(model_window, 200000)`.** The
+> `x-gateway-cost-guardrail` (F2) rejects requests whose estimated input exceeds a **global** 200,000
+> ceiling before provider dispatch. So the `BW`/window numbers below (DeepSeek 1,048,576, Kimi 262,144,
+> GLM ~202,752) are **model capability, not the per-request operational limit** — every harness is
+> operationally capped at ~200,000 input per request for cost safety. This is a deliberate cost policy;
+> a `perModel` guardrail ceiling (so DeepSeek can exceed 200k) is an optional next step. The guardrail is
+> per-request only — it does **not** cap cumulative/loop spend (that needs a billing ledger/DB, out of
+> scope for the no-DB build).
+
 ---
 
 ## PART A — Conflict matrix (4 models × 4 harnesses)
