@@ -146,7 +146,7 @@ Then test one harness:
 
 ```zsh
 claude-litellm haiku -p 'Reply with exactly OK' --no-session-persistence --tools ''
-codex-litellm gpt-5.4 exec --skip-git-repo-check --sandbox read-only 'Reply with exactly OK'
+codex-litellm exec --skip-git-repo-check --sandbox read-only 'Reply with exactly OK'
 ```
 
 Those harness smoke tests make real provider requests and may be billable.

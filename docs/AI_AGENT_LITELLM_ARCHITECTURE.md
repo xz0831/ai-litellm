@@ -176,7 +176,7 @@ ai-litellm harness info claude
 ai-litellm harness info codex
 
 ai-litellm harness launch claude sonnet -p "Reply with exactly OK" --no-session-persistence --tools ""
-ai-litellm harness launch codex gpt-5.4 exec --skip-git-repo-check --sandbox read-only "Reply with exactly OK"
+ai-litellm harness launch codex exec --skip-git-repo-check --sandbox read-only "Reply with exactly OK"
 ai-litellm harness launch goose gpt-5.4 run --no-session --no-profile -q --max-turns 1 -t "Reply with exactly OK"
 ai-litellm harness launch opencode gpt-5.4 run --agent plan --format json "Reply with exactly OK"
 ```

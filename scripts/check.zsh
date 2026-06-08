@@ -50,6 +50,7 @@ for harness in "${(@f)$(ai_litellm_harness_names)}"; do
   ai_litellm_harness_validate "$harness"
 done
 ai_litellm_model_limits GLM-5.1 >/dev/null
+test "$(ai_litellm_harness_json codex models.default)" = "gpt-5.5"
 budget="$(ai_litellm_harness_output_budget claude sonnet Kimi-K2.6)"
 test "$(print -r -- "$budget" | jq -r ".effectiveInput > 0 and .reservation < .capability")" = "true"
 codex_budget="$(ai_litellm_harness_output_budget codex gpt-5.4 gpt-5.4)"

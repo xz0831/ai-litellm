@@ -53,7 +53,7 @@
     "supportsWebsockets": false
   },
   "models": {
-    "default": "gpt-5.4",
+    "default": "gpt-5.5",
     "catalogBaseSlug": "gpt-5.4-mini",
     "localCatalogEntries": [
       {
