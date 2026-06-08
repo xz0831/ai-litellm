@@ -134,6 +134,15 @@ x-gateway-output-clamp:
   tokenizer_headroom: 8192
   minimum_input: 32768
 
+x-gateway-cost-guardrail:
+  # F2: provider-facing per-request guardrail. This is not billing-grade spend
+  # accounting; it rejects very large prompts before provider dispatch so live
+  # probes cannot accidentally spend dollars without an explicit opt-out.
+  enabled: true
+  max_estimated_input_tokens: 200000
+  max_estimated_total_tokens: 240000
+  chars_per_token: 4
+
 litellm_settings:
   drop_params: true
   callbacks: [ai_litellm_callbacks.output_clamp.proxy_handler_instance]

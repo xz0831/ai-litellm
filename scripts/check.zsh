@@ -19,6 +19,7 @@ python3 -m py_compile "$repo_root/config/ai_litellm_callbacks/output_clamp.py"
 
 for file in \
   "$repo_root/config/ai-litellm/settings.json" \
+  "$repo_root/config/ai-litellm/context-observations.json" \
   "$repo_root/config/ai-litellm/harnesses"/*.json(N) \
   "$repo_root/config/claude-litellm/settings.json" \
   "$repo_root/config/codex-litellm/settings.json"; do
@@ -39,6 +40,7 @@ HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
 HOME="$tmp_home" zsh -fc '
 prefix="$HOME/.local/share/ai-litellm-fabric"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/lib.zsh"
+test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/context-observations.json"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/litellm_config.yaml"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai_litellm_callbacks/output_clamp.py"
 test -x "$HOME/.local/share/ai-litellm-fabric/bin/claude-litellm"
@@ -54,6 +56,9 @@ done
 ai_litellm_model_limits GLM-5.1 >/dev/null
 ai_litellm_context_gateway_clamp_policy_ok
 ai_litellm_context_gateway_clamp_configured
+ai_litellm_context_gateway_cost_guardrail_policy_ok
+ai_litellm_context_gateway_cost_guardrail_configured
+ai_litellm_context_observations_ok
 ai_litellm_model_info_anchor_refs_ok
 openrouter_models_fixture="$HOME/openrouter-models.json"
 print -r -- "{\"data\":[{\"id\":\"deepseek/deepseek-v4-pro\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":384000},\"supported_parameters\":[\"reasoning\"]},{\"id\":\"moonshotai/kimi-k2.6\",\"context_length\":262144,\"top_provider\":{\"context_length\":262142,\"max_completion_tokens\":262142},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"z-ai/glm-5.1\",\"context_length\":202752,\"top_provider\":{\"context_length\":202752,\"max_completion_tokens\":null},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]}]}" > "$openrouter_models_fixture"
@@ -61,7 +66,13 @@ export AI_LITELLM_OPENROUTER_MODELS_JSON="$openrouter_models_fixture"
 ai_litellm_model_refresh_capabilities --check >/dev/null
 ai_litellm_model_policy_audit >/dev/null
 PYTHONPATH="$prefix/config" AI_LITELLM_CONFIG="$prefix/config/litellm_config.yaml" python3 - <<'"'"'PY'"'"'
-from ai_litellm_callbacks.output_clamp import CALLBACK_NAME, clamp_token_reservations, gateway_output_cap
+from ai_litellm_callbacks.output_clamp import (
+    CALLBACK_NAME,
+    clamp_token_reservations,
+    enforce_cost_guardrail,
+    gateway_cost_guardrail_decision,
+    gateway_output_cap,
+)
 
 assert CALLBACK_NAME == "ai_litellm_callbacks.output_clamp.proxy_handler_instance"
 shared = {
@@ -81,7 +92,22 @@ small = {
 assert gateway_output_cap(small) == 3277
 clamp_token_reservations(small)
 assert small["max_tokens"] == 3277
+
+allowed = gateway_cost_guardrail_decision({"messages": [{"role": "user", "content": "short"}], "max_tokens": 8})
+assert allowed["allowed"] is True
+large = {"messages": [{"role": "user", "content": " ".join(f"w{i}" for i in range(200001))}], "max_tokens": 1}
+blocked = gateway_cost_guardrail_decision(large)
+assert blocked["allowed"] is False
+try:
+    enforce_cost_guardrail(large)
+except Exception as exc:
+    assert "cost guardrail rejected" in str(exc)
+else:
+    raise AssertionError("large request was not rejected by cost guardrail")
 PY
+ai_litellm_context_observations DeepSeek >/dev/null
+matrix_opus="$(ai_litellm_context_matrix claude-litellm)"
+print -r -- "$matrix_opus" | grep -q ">=211580"
 test "$(ai_litellm_harness_json codex models.default)" = "gpt-5.5"
 budget="$(ai_litellm_harness_output_budget claude sonnet Kimi-K2.6)"
 test "$(print -r -- "$budget" | jq -r ".effectiveInput > 0 and .reservation < .capability")" = "true"

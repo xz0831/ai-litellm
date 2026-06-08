@@ -15,6 +15,8 @@ export AI_LITELLM_LOG_FILE="${AI_LITELLM_LOG_FILE:-$AI_LITELLM_HOME/litellm.log}
 export AI_LITELLM_CONFIG_HASH_FILE="${AI_LITELLM_CONFIG_HASH_FILE:-$AI_LITELLM_HOME/litellm.config.sha256}"
 export AI_LITELLM_STARTED_AT_FILE="${AI_LITELLM_STARTED_AT_FILE:-$AI_LITELLM_HOME/litellm.started_at}"
 export AI_LITELLM_REASONING_OBS_FILE="${AI_LITELLM_REASONING_OBS_FILE:-$AI_LITELLM_HOME/reasoning-observations.json}"
+export AI_LITELLM_CONTEXT_OBS_SEED="${AI_LITELLM_CONTEXT_OBS_SEED:-$AI_LITELLM_CONFIG_HOME/ai-litellm/context-observations.json}"
+export AI_LITELLM_CONTEXT_OBS_FILE="${AI_LITELLM_CONTEXT_OBS_FILE:-$AI_LITELLM_HOME/context-observations.json}"
 export AI_LITELLM_LOCK_MAX_AGE_SECONDS="${AI_LITELLM_LOCK_MAX_AGE_SECONDS:-300}"
 export AI_LITELLM_LEGACY_ENV="${AI_LITELLM_LEGACY_ENV:-$HOME/.config/ai-litellm/env}"
 export AI_LITELLM_LEGACY_PID_FILE="${AI_LITELLM_LEGACY_PID_FILE:-$HOME/.config/ai-litellm/litellm.pid}"
@@ -2328,6 +2330,9 @@ ai_litellm_doctor() {
   ai_litellm_doctor_check "local model routes are unique" ai_litellm_doctor_local_route_uniqueness || failed=1
   ai_litellm_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
   ai_litellm_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
+  ai_litellm_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
+  ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
+  ai_litellm_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
   ai_litellm_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
   ai_litellm_doctor_check "harness reasoning configs match descriptors" ai_litellm_doctor_reasoning_sync || failed=1
@@ -3419,7 +3424,7 @@ ai_litellm_harness_reasoning_unset() {
 ai_litellm_context_matrix() {
   local filter="$1"
   ruby -rjson -ryaml -ropen3 -e '
-config_path, settings_path, harness_dir, home, base_url, api_base_url, filter = ARGV
+config_path, settings_path, harness_dir, home, base_url, api_base_url, filter, context_obs_seed, context_obs_file = ARGV
 filter ||= ""
 
 NATIVE_CODEX_MODEL = "gpt-5.5"
@@ -3502,8 +3507,78 @@ def include_row?(row, filter)
   end
 end
 
+def read_context_observations(*paths)
+  observations = []
+  paths.each do |path|
+    next unless path && File.file?(path)
+    payload = read_json(path) || {}
+    Array(payload["observations"]).each do |observation|
+      observations << observation.merge("_source_file" => path) if observation.is_a?(Hash)
+    end
+  end
+  observations
+end
+
+def context_observation_for(observations, surface, selection, model, provider)
+  candidates = observations.map do |obs|
+    scope = (obs["scope"] || "surface").to_s
+    if scope == "backend"
+      next unless obs["provider_model"].to_s == provider.to_s || obs["model_name"].to_s == model.to_s
+    else
+      next unless obs["surface"].to_s == surface.to_s
+      next unless obs["provider_model"].to_s == provider.to_s || obs["model_name"].to_s == model.to_s
+      if obs["selection"]
+        selections = Array(obs["selections"]) + [obs["selection"]]
+        next unless selections.include?(selection)
+      end
+    end
+    score = 0
+    score += 8 if obs["surface"].to_s == surface.to_s
+    score += 4 if obs["selection"].to_s == selection.to_s
+    score += 3 if obs["model_name"].to_s == model.to_s
+    score += 3 if obs["provider_model"].to_s == provider.to_s
+    [score, obs]
+  end.compact
+  candidates.max_by { |score, obs| [score, obs["timestamp"].to_s] }&.last
+end
+
+def observation_input_tokens(observation)
+  positive_int(
+    observation && (
+      observation["observed_input_tokens"] ||
+      observation["accepted_input_tokens"] ||
+      observation["input_tokens"]
+    )
+  )
+end
+
+def format_context_observation(observation)
+  tokens = observation_input_tokens(observation)
+  return nil unless tokens
+  status = observation["status"].to_s
+  if %w[lower_bound accepted observed].include?(status)
+    ">=#{tokens}"
+  else
+    tokens
+  end
+end
+
+def context_observation_confidence(observation)
+  return nil unless observation
+  status = observation["status"].to_s
+  case status
+  when "upper_bound", "observed_max"
+    "observed-max"
+  when "error"
+    "observed-error"
+  else
+    "observed-lower-bound"
+  end
+end
+
 config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
 settings = read_json(settings_path) || {}
+context_observations = read_context_observations(context_obs_seed, context_obs_file)
 registry = {}
 Array(config["model_list"]).each do |entry|
   registry[entry["model_name"]] = entry if entry["model_name"]
@@ -3646,26 +3721,35 @@ def model_limit_confidence(mi)
   input == output ? input : "input:#{input}/output:#{output}"
 end
 
-def add_litellm_row(rows, registry, model, surface, selection, budget_kind, auth_lane, enforcement, confidence, descriptor = nil)
+def add_litellm_row(rows, registry, observations, model, surface, selection, budget_kind, auth_lane, enforcement, confidence, descriptor = nil)
   entry = registry[model]
   mi = entry && entry["model_info"] || {}
   ctx = mi["max_input_tokens"]
   out = mi["max_output_tokens"]
+  provider = provider_model(entry)
   budget = output_budget(descriptor, selection, model, ctx, out)
+  observation = context_observation_for(observations, surface, selection, model, provider)
+  observed_context = format_context_observation(observation)
+  observed_confidence = context_observation_confidence(observation)
   model_confidence = model_limit_confidence(mi)
-  combined_confidence = [model_confidence, confidence].reject { |v| v.nil? || v.to_s.empty? }.join("+")
+  combined_confidence = [model_confidence, observed_confidence, confidence].reject { |v| v.nil? || v.to_s.empty? }.join("+")
+  effective_input_budget = budget ? budget[:effective_input] : ctx
+  if observation && %w[upper_bound observed_max].include?(observation["status"].to_s)
+    tokens = observation_input_tokens(observation)
+    effective_input_budget = [effective_input_budget, tokens].compact.map(&:to_i).min if tokens
+  end
   add_row(rows,
     surface: surface,
     selection: selection,
     auth_lane: auth_lane,
-    provider_model: provider_model(entry),
+    provider_model: provider,
     budget_kind: budget_kind,
     declared_context: ctx,
     declared_output: out,
     configured_context: ctx,
     configured_output: budget ? budget[:reservation] : out,
-    observed_context: nil,
-    effective_input_budget: budget ? budget[:effective_input] : ctx,
+    observed_context: observed_context,
+    effective_input_budget: effective_input_budget,
     enforcement_layer: enforcement,
     source_confidence: budget ? "#{combined_confidence}+reservation" : combined_confidence)
 end
@@ -3736,7 +3820,7 @@ Dir[File.join(harness_dir, "*.json")].sort.each do |path|
   context = descriptor_context(descriptor, harness, router_enforcement)
   next unless context
   descriptor_selections(descriptor, registry).each do |selection, model|
-    add_litellm_row(rows, registry, model, context[:surface], selection,
+    add_litellm_row(rows, registry, context_observations, model, context[:surface], selection,
       context[:budget_kind], context[:auth_lane], context[:enforcement], context[:confidence], descriptor)
   end
 end
@@ -3792,7 +3876,7 @@ rows.each do |row|
     row[:budget_kind], row[:declared], row[:configured], row[:observed],
     row[:effective_input], row[:enforcement], row[:confidence])
 end
-' "$AI_LITELLM_CONFIG" "$AI_LITELLM_SETTINGS" "$AI_LITELLM_HARNESSES_DIR" "$HOME" "$(ai_litellm_base_url)" "$(ai_litellm_api_base_url)" "$filter"
+' "$AI_LITELLM_CONFIG" "$AI_LITELLM_SETTINGS" "$AI_LITELLM_HARNESSES_DIR" "$HOME" "$(ai_litellm_base_url)" "$(ai_litellm_api_base_url)" "$filter" "$AI_LITELLM_CONTEXT_OBS_SEED" "$AI_LITELLM_CONTEXT_OBS_FILE"
 }
 
 ai_litellm_context_probe_latest_codex_session() {
@@ -3953,15 +4037,179 @@ ai_litellm_context_probe_runtime_surface() {
     || echo "  not reachable"
 }
 
+ai_litellm_context_observation_record() {
+  local observation_json="$1"
+  mkdir -p "$AI_LITELLM_HOME"
+  node -e '
+const fs = require("fs");
+const [file, raw] = process.argv.slice(1);
+const observation = JSON.parse(raw);
+let state = {schemaVersion: 1, observations: []};
+try {
+  state = JSON.parse(fs.readFileSync(file, "utf8"));
+} catch (_) {}
+if (!state || typeof state !== "object" || Array.isArray(state)) state = {schemaVersion: 1, observations: []};
+if (!Array.isArray(state.observations)) state.observations = [];
+if (!observation.id) {
+  const parts = [
+    observation.timestamp || new Date().toISOString(),
+    observation.surface || "any",
+    observation.selection || "any",
+    observation.model_name || "unknown",
+    observation.provider_model || "unknown"
+  ].map((part) => String(part).replace(/[^A-Za-z0-9_.-]+/g, "-"));
+  observation.id = parts.join(":");
+}
+state.schemaVersion = 1;
+state.observations = state.observations.filter((item) => item && item.id !== observation.id);
+state.observations.push(observation);
+state.observations.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+const tmp = `${file}.tmp.${process.pid}`;
+try {
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", {mode: 0o600});
+  fs.renameSync(tmp, file);
+} catch (error) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  throw error;
+}
+' "$AI_LITELLM_CONTEXT_OBS_FILE" "$observation_json"
+}
+
+ai_litellm_context_probe_record() {
+  local surface="${1:-}" selection="${2:-}" model="${3:-}" tokens="${4:-}"
+  shift $(( $# < 4 ? $# : 4 ))
+  if [[ -z "$surface" || -z "$selection" || -z "$model" || -z "$tokens" ]]; then
+    echo "Usage: ai-litellm context probe record <surface> <selection> <model> <observed_input_tokens> [--provider-model model] [--status lower_bound|upper_bound|observed] [--cost-usd n] [--notes text]" >&2
+    return 1
+  fi
+
+  local provider_model obs_status="lower_bound" cost_usd="" notes=""
+  provider_model="$(ai_litellm_model_backend "$model" 2>/dev/null || true)"
+  while (( $# )); do
+    case "$1" in
+      --provider-model) provider_model="${2:-}"; shift 2 ;;
+      --status) obs_status="${2:-}"; shift 2 ;;
+      --cost-usd) cost_usd="${2:-}"; shift 2 ;;
+      --notes) notes="${2:-}"; shift 2 ;;
+      *) echo "Unknown context observation option: $1" >&2; return 1 ;;
+    esac
+  done
+
+  [[ "$tokens" == <-> ]] && (( tokens > 0 )) || {
+    echo "observed_input_tokens must be a positive integer" >&2
+    return 1
+  }
+
+  local observation_json
+  observation_json="$(jq -nc \
+    --arg surface "$surface" \
+    --arg selection "$selection" \
+    --arg model "$model" \
+    --arg provider_model "$provider_model" \
+    --arg status "$obs_status" \
+    --argjson tokens "$tokens" \
+    --arg cost "$cost_usd" \
+    --arg notes "$notes" '
+      {
+        timestamp: (now | todateiso8601),
+        scope: "surface",
+        surface: $surface,
+        selection: $selection,
+        model_name: $model,
+        provider_model: (if $provider_model == "" then null else $provider_model end),
+        status: $status,
+        observed_input_tokens: $tokens
+      }
+      + (if $cost == "" then {} else {cost_usd: ($cost | tonumber)} end)
+      + (if $notes == "" then {} else {evidence: $notes} end)
+    ')" || return $?
+
+  ai_litellm_context_observation_record "$observation_json" || return $?
+  print -r -- "$observation_json" | jq '{surface, selection, model_name, provider_model, status, observed_input_tokens, cost_usd, evidence}'
+}
+
+ai_litellm_context_observations() {
+  local filter="${1:-}"
+  ruby -rjson -e '
+seed_path, state_path, filter = ARGV
+filter ||= ""
+
+def read_json(path)
+  return {} unless path && File.file?(path)
+  JSON.parse(File.read(path))
+rescue
+  {}
+end
+
+rows = []
+[[seed_path, "seed"], [state_path, "state"]].each do |path, source|
+  Array(read_json(path)["observations"]).each do |obs|
+    next unless obs.is_a?(Hash)
+    row = {
+      source: source,
+      surface: obs["surface"] || (obs["scope"] == "backend" ? "*" : "-"),
+      selection: obs["selection"] || "-",
+      model: obs["model_name"] || "-",
+      provider: obs["provider_model"] || "-",
+      status: obs["status"] || "-",
+      observed: obs["observed_input_tokens"] || obs["accepted_input_tokens"] || obs["input_tokens"] || "-",
+      cost: obs["cost_usd"] || "-",
+      id: obs["id"] || "-"
+    }
+    next unless filter.empty? || row.values.any? { |v| v.to_s.include?(filter) }
+    rows << row
+  end
+end
+
+printf("%-6s %-18s %-18s %-22s %-42s %-18s %-10s %-8s %s\n",
+  "source", "surface", "selection", "model", "provider_model", "status", "observed", "cost", "id")
+rows.each do |row|
+  printf("%-6s %-18s %-18s %-22s %-42s %-18s %-10s %-8s %s\n",
+    row[:source], row[:surface], row[:selection], row[:model], row[:provider],
+    row[:status], row[:observed], row[:cost], row[:id])
+end
+' "$AI_LITELLM_CONTEXT_OBS_SEED" "$AI_LITELLM_CONTEXT_OBS_FILE" "$filter"
+}
+
+ai_litellm_context_observations_ok() {
+  node -e '
+const fs = require("fs");
+const files = process.argv.slice(1);
+for (const file of files) {
+  if (!file || !fs.existsSync(file)) continue;
+  const payload = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error(`${file}: root must be an object`);
+  }
+  if (!Array.isArray(payload.observations)) {
+    throw new Error(`${file}: observations must be an array`);
+  }
+  for (const [index, obs] of payload.observations.entries()) {
+    if (!obs || typeof obs !== "object" || Array.isArray(obs)) {
+      throw new Error(`${file}: observation ${index} must be an object`);
+    }
+    const tokens = Number(obs.observed_input_tokens ?? obs.accepted_input_tokens ?? obs.input_tokens ?? 0);
+    if (!Number.isFinite(tokens) || tokens <= 0) {
+      throw new Error(`${file}: observation ${index} must have positive observed input tokens`);
+    }
+  }
+}
+' "$AI_LITELLM_CONTEXT_OBS_SEED" "$AI_LITELLM_CONTEXT_OBS_FILE"
+}
+
 ai_litellm_context_probe() {
   local surface="$1"
   if [[ -z "$surface" ]]; then
-    echo "Usage: ai-litellm context probe <surface|all>" >&2
+    echo "Usage: ai-litellm context probe <surface|all>|record <surface> <selection> <model> <observed_input_tokens>" >&2
     echo "Surfaces: $(ai_litellm_context_surfaces | paste -sd ' ' -)" >&2
     return 1
   fi
 
   case "$surface" in
+    record)
+      shift
+      ai_litellm_context_probe_record "$@"
+      ;;
     all)
       local item failed=0
       for item in "${(@f)$(ai_litellm_context_surfaces)}"; do
@@ -4069,6 +4317,30 @@ end
 ' "$AI_LITELLM_CONFIG"
 }
 
+ai_litellm_context_gateway_cost_guardrail_policy_ok() {
+  ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+policy = config["x-gateway-cost-guardrail"] || {}
+errors = []
+if policy["enabled"] == false
+  errors << "x-gateway-cost-guardrail.enabled must stay true unless the limitation is explicitly documented"
+end
+%w[max_estimated_input_tokens max_estimated_total_tokens chars_per_token].each do |key|
+  value = policy[key]
+  errors << "x-gateway-cost-guardrail.#{key} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+end
+input = policy["max_estimated_input_tokens"].to_i
+total = policy["max_estimated_total_tokens"].to_i
+if input.positive? && total.positive? && total < input
+  errors << "x-gateway-cost-guardrail.max_estimated_total_tokens must be >= max_estimated_input_tokens"
+end
+if errors.any?
+  warn errors.join("\n")
+  exit 1
+end
+' "$AI_LITELLM_CONFIG"
+}
+
 ai_litellm_context_gateway_clamp_configured() {
   ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
@@ -4076,6 +4348,17 @@ settings = config["litellm_settings"] || {}
 callbacks = Array(settings["callbacks"])
 has_hook = callbacks.include?("ai_litellm_callbacks.output_clamp.proxy_handler_instance")
 enabled = (config.dig("x-gateway-output-clamp", "enabled") != false)
+exit(has_hook && enabled ? 0 : 1)
+' "$AI_LITELLM_CONFIG"
+}
+
+ai_litellm_context_gateway_cost_guardrail_configured() {
+  ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+settings = config["litellm_settings"] || {}
+callbacks = Array(settings["callbacks"])
+has_hook = callbacks.include?("ai_litellm_callbacks.output_clamp.proxy_handler_instance")
+enabled = (config.dig("x-gateway-cost-guardrail", "enabled") != false)
 exit(has_hook && enabled ? 0 : 1)
 ' "$AI_LITELLM_CONFIG"
 }
@@ -4418,6 +4701,9 @@ ai_litellm_context_doctor() {
   ai_litellm_context_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
   ai_litellm_context_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
   ai_litellm_context_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
+  ai_litellm_context_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
+  ai_litellm_context_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
+  ai_litellm_context_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
   ai_litellm_context_doctor_check "harness context surfaces are unique" ai_litellm_context_descriptor_surfaces_ok || failed=1
   ai_litellm_context_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_context_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
@@ -4527,8 +4813,9 @@ ai_litellm_cmd_context() {
   case "$verb" in
     matrix|"") ai_litellm_context_matrix "$@" ;;
     probe)     ai_litellm_context_probe "$@" ;;
+    observations) ai_litellm_context_observations "$@" ;;
     doctor)    ai_litellm_context_doctor "$@" ;;
-    *) echo "Usage: ai-litellm context matrix [filter]|probe <surface|all>|doctor" >&2; return 1 ;;
+    *) echo "Usage: ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]|doctor" >&2; return 1 ;;
   esac
 }
 
@@ -4549,6 +4836,9 @@ ai_litellm_model_policy_audit() {
   ai_litellm_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
   ai_litellm_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
   ai_litellm_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
+  ai_litellm_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
+  ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
+  ai_litellm_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
   ai_litellm_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
   ai_litellm_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_doctor_check "context matrix renders" ai_litellm_quiet ai_litellm_context_matrix || failed=1
@@ -4595,7 +4885,7 @@ Usage: ai-litellm <group> <verb> [args]
   Effort:   OpenRouter none|minimal|low|medium|high|xhigh; Claude auto|low|medium|high|xhigh|max;
             Codex low|medium|high|xhigh; OpenCode auto|none|minimal|low|medium|high|max; Goose auto|none
   Route:    ai-litellm route list|info [model]|probe <model...>|check [model...]
-  Context:  ai-litellm context matrix [filter]|probe <surface|all>|doctor
+  Context:  ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]|doctor
   Reason:   ai-litellm reasoning matrix [model]|probe <model> [effort]|doctor
   Audit:    ai-litellm audit model-policy
   Key:      ai-litellm key status

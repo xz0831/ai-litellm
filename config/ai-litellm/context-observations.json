@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "observations": [
+    {
+      "id": "2026-06-08-claude-opus-deepseek-211580-lower-bound",
+      "timestamp": "2026-06-08T00:00:00Z",
+      "scope": "surface",
+      "surface": "claude-litellm",
+      "selection": "opus",
+      "selections": [
+        "opus",
+        "default(opus)"
+      ],
+      "model_name": "DeepSeek-V4-Pro",
+      "provider_model": "openrouter/deepseek/deepseek-v4-pro",
+      "status": "lower_bound",
+      "observed_input_tokens": 211580,
+      "observed_output_tokens": 46,
+      "cost_usd": 1.05905,
+      "evidence": "Claude opus via LiteLLM returned the tail marker for a simple-token 210K-word prompt; full 1M remains unprobed."
+    },
+    {
+      "id": "2026-06-08-glm51-204800-lower-bound",
+      "timestamp": "2026-06-08T00:00:00Z",
+      "scope": "backend",
+      "model_name": "GLM-5.1",
+      "provider_model": "openrouter/z-ai/glm-5.1",
+      "status": "lower_bound",
+      "observed_input_tokens": 204800,
+      "evidence": "Earlier OpenRouter boundary probe accepted 1 input token plus max_tokens=204799. Current provider-authoritative cap remains 202752, so enforcement stays conservative."
+    }
+  ]
+}

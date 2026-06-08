@@ -108,3 +108,44 @@ honesty-first 아키텍처에서 가장 나쁜 상태는 "matrix가 1,008,384를
 4. **C3** → 품질 프로브 후 상향 또는 정책 문서화.
 5. (여력 시) **입력-윈도우 observed 프로브**로 matrix confidence 완전 신뢰화.
 6. 마무리: 위 acceptance 4조건 충족 확인, doctor 재실행, 문서 갱신(MODEL_HARNESS 문서의 C1/C2/C4/C6/C7 상태를 RESOLVED/OBSERVED로 정정).
+
+---
+
+## 7. 직전 검증(2026-06-08)에서 새로 드러난 항목 — 강력 권고
+
+지난 라운드 Codex 작업을 실측 검증한 결과, **doctrine 구현은 우수**했다(`model refresh-capabilities` 신설 + 앵커 `x_*_confidence/source` 메타데이터 + warn의 `owned-policy` 라벨 + C2/C4/C5 라이브 클램프 확인). 그러나 **"완성(unknown unknown=0)"에는 아직 미달**이며, 아래 두 건이 다음 작업의 **최우선**이다. (F1 매트릭스 stale은 이미 정정 완료 — `MODEL_HARNESS_CONTEXT_AUDIT_FOR_CODEX.md`의 opus 행/요약/ledger를 "observed >200K; full 1M unprobed"로 갱신함.)
+
+### F2 — 작동하는 비용 가드레일 부재 ★ 신규 최우선 (capacity가 아니라 운영 안전)
+- **사실(관측):** C1 프로브 1회 = **$1.05905**. Codex가 `--max-budget-usd가 이 LiteLLM 경로에서 hard cap으로 작동하지 않음`을 확인. full 1M 프로브는 ~$5+, 폭주 agent 루프는 그 이상 — **enforced spend cap이 없다.**
+- **왜 최우선인가:** 멀티모델 게이트웨이에서 비용 폭주는 token-window 폴리싱보다 더 실질적인 위험이다. 지금은 known gap인데 **미소유** 상태 → "unknown unknown=0" 위배.
+- **권고(택1, 관측으로 검증):**
+  - (a) **LiteLLM proxy 레벨 예산**: virtual key/team `max_budget` + `budget_duration`, 또는 per-request `max_budget`로 provider 직전 거부. 단 spend 추적이 DB를 요구하는지(현재 무DB 빌드) **먼저 검증**할 것 — 무DB면 (b).
+  - (b) **pre-call hook 가드레일**: 기존 `config/ai_litellm_callbacks/output_clamp.py`와 같은 자리에 per-request 토큰/추정비용 상한을 두고 초과 시 reject. output_clamp가 이미 `async_pre_call_deployment_hook`을 검증된 형태로 쓰므로 재사용 가능.
+  - (c) 최소한: cap이 불가하면 "이 경로에 enforced spend cap 없음 + 수동 가드레일(작은 프롬프트/`max_tokens` 명시/세션 모니터링)"을 **owned-limitation으로 문서화**하고 doctor가 그 사실을 알리게.
+- **검증:** temp-copy config로 hook/budget을 켜고, 상한 초과 요청이 provider 도달 전에 거부되는지 관측(클램프 검증과 동일 패턴). 라이브 유료 호출 남발 금지.
+- **files:** `config/litellm_config.yaml`(`general_settings`/`litellm_settings`), `config/ai_litellm_callbacks/`(가드레일 hook), 필요 시 `scripts/verify_*`.
+
+### F3 — 입력-윈도우 observed 프로브 일반화 ★ C1을 원칙대로 닫는 유일한 길
+- **사실:** 구조 권고 1순위(`refresh-capabilities`)는 이행됐으나 **2순위(입력-윈도우 observed 프로브)는 미이행**. C1은 손으로 1회 잰 일회성이라 matrix에서 opus를 원칙적으로 `observed`로 박을 메커니즘이 없다 → **full 1M honor가 영구 unknown으로 남는다.**
+- **권고:** `ai-litellm context probe <surface>`를 **실측 확장** — graduated-size 프롬프트(예: 200K→400K→800K, F2의 비용 가드레일 적용)로 각 harness의 **실제 사용 가능한 입력 윈도우**를 관측하고, `reasoning-observations.json`과 같은 캐시(`context-observations.json`)에 인코딩. 그러면:
+  - context matrix의 입력 `observed` 컬럼이 진짜가 되고 confidence가 완전히 신뢰 가능해진다.
+  - C1(opus 1M)이 "절반 관측"에서 "observed로 인코딩됨"으로 닫힌다.
+  - 새 모델/harness가 들어와도 동일 프로브로 입력 윈도우를 박을 수 있다(미래 일반화).
+- **반드시 F2 선행:** 큰 입력 프로브는 비용이 크므로 F2(가드레일) 없이는 안전하게 못 돌린다. **F2 → F3 순서.**
+- **files:** `config/ai-litellm/lib.zsh`(`ai_litellm_context_probe` 확장), 신규 `context-observations.json`, `context matrix`의 observed 컬럼 소스.
+
+### 부수 권고 (경미)
+- **관측을 폐기하지 말 것(F2.5):** GLM `204800` 관측을 `202752`(provider 정본)로 대체하면서 관측값을 어디에도 기록하지 않았다. OpenRouter는 provider를 multiplex하므로 둘 다 참일 수 있다. **enforce는 보수적 `min(declared, observed)`로 하되 둘 다 인코딩**(`x_input_observed`)해 관측을 잃지 말 것.
+- **C7:** 현재 "observed; no code change"(+한계 명시)는 doctrine상 합격. Codex가 비-OpenAI patch tool mode를 노출하기 전까지 deletion 유지가 맞다 — 추가 작업 불필요, 단 그 한계를 owned-limitation으로 유지.
+
+### 갱신된 완성 정의
+§4의 acceptance 4조건에 더해: **(5) 모든 유료 경로에 enforced 또는 명시-문서화된 비용 가드레일이 있고(F2), (6) matrix의 입력 윈도우가 provider-정본 또는 encoded-observed이며 일회성 메모가 아니다(F3).** 이 둘까지 충족하면 honesty·capacity·운영안전 축이 모두 닫힌다.
+
+---
+
+## 8. Codex 적용 상태 (2026-06-08)
+
+- **F2 implemented:** production callback `ai_litellm_callbacks.output_clamp.proxy_handler_instance`가 output clamp 이후 `x-gateway-cost-guardrail`을 적용한다. 기본값은 estimated input `200000`, estimated total `240000`, `chars_per_token=4`이다. 이는 billing DB budget이 아니라 provider dispatch 전 deterministic token-estimate reject이다.
+- **F2 verified:** `scripts/verify_litellm_token_clamp.py`가 mock provider에서 상한 초과 요청의 `upstream_body=null`을 확인한다. production callback 검증은 400을 반환하고 provider에는 도달하지 않았다.
+- **F3 implemented:** repo seed `config/ai-litellm/context-observations.json`와 local state `state/ai-litellm/context-observations.json`을 합쳐 `ai-litellm context observations`와 `context matrix`가 읽는다. C1 `>=211580`과 GLM `>=204800` lower-bound 관측이 encoded-observed로 보존된다.
+- **F3 boundary:** full 1M honor는 아직 관측하지 않았다. matrix의 `>=211580`은 하한 증거이지 1M 확정값이 아니며, 추가 대형 probe는 `ai-litellm context probe record ...`로 명시 기록해야 한다.

@@ -12,8 +12,10 @@ source of truth = this repo. Models: DeepSeek-V4-Pro, Kimi-K2.6, GLM-5.1, local 
 - **C3 closed as owned policy for now:** local Gemma remains capped at `8192/4096` despite oMLX advertising a larger runtime window because `sliding_window=1024` makes long-context quality uncertain. Raising it requires a separate quality probe.
 - **C1 partially observed:** A simple-token 210K-word Claude `opus` prompt succeeded through DeepSeek and returned the tail marker (`inputTokens=211580`, cost `$1.05905`), so the hard 200K name-derived clamp hypothesis is false. Full 1M honor remains unprobed because `--max-budget-usd` did not act as a hard cap on this LiteLLM path.
 - **C7 observed; no code change:** Current catalog deletion produced no provider 400 on DeepSeek/Kimi/GLM, but `apply_patch` was not exposed to Codex exec. `apply_patch_tool_type="function"` is invalid for this Codex catalog schema, and `freeform` did not 400 but failed inside Codex core with incompatible payload/aborted. Keep deletion until Codex exposes a valid non-OpenAI patch tool mode.
+- **F2 resolved as estimated-token guardrail:** the production callback now applies `x-gateway-cost-guardrail` after output clamp and rejects oversized requests before provider dispatch. This is not billing-ledger budgeting; it is a deterministic pre-call safety bound for expensive probes/loops.
+- **F3 resolved as encoded observations:** `config/ai-litellm/context-observations.json` preserves Claude opus→DeepSeek `>=211580` and GLM `>=204800` lower-bound observations, while local state can record new observations with `ai-litellm context probe record ...`.
 
-Important correction: the earlier GLM `204800` boundary observation is no longer used as source of truth because the requested provider refresh currently reports OpenRouter top-provider `context_length=202752`. The architecture now prefers provider-authoritative values unless a later bounded probe is recorded as `observed` and encoded with matching confidence metadata.
+Important correction: the earlier GLM `204800` boundary observation is no longer used as the enforcement source of truth because the requested provider refresh currently reports OpenRouter top-provider `context_length=202752`. It is now preserved as an encoded lower-bound observation, while the enforced/configured cap stays provider-authoritative and conservative.
 
 ## TL;DR for Codex
 
@@ -44,7 +46,7 @@ Important correction: the earlier GLM `204800` boundary observation is no longer
 
 **The crux:** harnesses believe `window = INPUT only` and reserve output separately; OpenRouter counts
 `input + reserved_output`. `pre_call_checks` catches input overflow but **never** the input+output sum,
-and the gateway has **no output clamp**. So output-reservation size is the binding safety lever.
+and the gateway originally had **no output clamp**. The current architecture now has both harness reservations and a provider-facing output clamp; output-reservation size remains the binding safety lever.
 
 ---
 
@@ -55,13 +57,16 @@ and the gateway has **no output clamp**. So output-reservation size is the bindi
 ### DeepSeek-V4-Pro — RW 1,048,576 in / 384,000 out (huge slack; output ≪ window)
 | Harness | INPUT | OUTPUT | Numbers |
 |---|---|---|---|
-| claude (opus) | **wasted? (disputed)** | ok | BW=200K name-derived *or* 1,008,384 injected; RW=1,048,576; RO=32,000 |
+| claude (opus) | **observed >200K; full 1M unprobed** | ok | BW≥211,580 (observed); RW=1,048,576; RO=32,000 |
 | codex (gpt-5.5) | ok | ok | BW=1,048,576 (catalog, pct=95); RO=provider-default fits |
 | goose / opencode | n/a (default route is Kimi) | ok | — |
 
-> Central dispute: launcher injects `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1,008,384` and the live matrix shows
-> opus `effective_input=1,008,384`, but whether Claude Code **honors** it vs clamps to a name-derived 200K
-> is **not empirically proven**. → C1.
+> **C1 update (2026-06-08): the "silent 200K clamp" hypothesis is FALSE (observed).** A 210K-word opus
+> prompt succeeded through DeepSeek with `inputTokens=211580` (cost $1.05905), so opus does NOT clamp to a
+> name-derived 200K — `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1,008,384` is honored at least to ~211K. **Full 1M
+> honor remains unprobed** (a 1M probe is financially unbounded because `--max-budget-usd` did not act as a
+> hard cap on this path — see the recommendation doc's cost-guardrail item). Encode the result as a
+> repeatable `observed` input-window probe rather than a one-off note. → C1.
 
 ### Kimi-K2.6 — RW 262,144 in / 262,144 out (window == output cap → the ONLY tight model)
 | Harness | INPUT | OUTPUT | Numbers |
@@ -74,15 +79,16 @@ and the gateway has **no output clamp**. So output-reservation size is the bindi
 > **Highest-risk model**: `out_cap == in_cap == window`. Any nonzero output reservation crowds input; a
 > full-window output request rejects on any input>0. claude/goose/opencode safe; **codex unguarded**. → C2.
 
-### GLM-5.1 — RW 204,800 in (observed) / out cap ~131,072 (output < window → fits)
+### GLM-5.1 — provider cap 202,752 in, observed lower-bound 204,800 / out cap ~131,072 (output < window → fits)
 | Harness | INPUT | OUTPUT | Numbers |
 |---|---|---|---|
 | claude (haiku) | wasted (minor) | ok | BW=200K; RW=204,800; RO=32,000; IH=162,560 |
 | codex (gpt-5.3-codex / gpt-5.2) | overflow-risk (mild) | ok | BW=202,752 (under-declared); RO=none; out 131,072 < window so a max-out turn fits, but high-input + provider-default output can 400 |
 | goose / opencode | ok | ok | RO=32,000 |
 
-> Anchor `glm51.max_input_tokens: 202752` under-declares the real **204,800** by exactly 2048 (safe
-> direction, minor waste). GLM output cap 131,072 is **local-configured / unobserved**. → C6.
+> OpenRouter top-provider currently declares `glm51.max_input_tokens: 202752`; an earlier boundary probe
+> observed `>=204800` on a multiplexed route. Both are encoded now. Enforcement stays at the conservative
+> provider-authoritative cap. GLM output cap 131,072 is **owned-policy / unobserved**. → C6.
 
 ### gemma local — config-capped 8,192 in / 4,096 out; runtime serves 131,072
 | Harness | INPUT | OUTPUT | Numbers |
@@ -93,7 +99,7 @@ and the gateway has **no output clamp**. So output-reservation size is the bindi
 > Caveat: `sliding_window=1024` may degrade long-context quality. → C3.
 
 ### Per-model one-liners
-- **DeepSeek**: output never conflicts (384k ≪ 1M). Only question: does opus use the 1M? (disputed, C1).
+- **DeepSeek**: output never conflicts (384k ≪ 1M). opus is **observed past 200K** (≥211,580; not name-clamped); full 1M honor still unprobed (C1).
 - **Kimi**: the one truly tight model. Safe on claude/goose/opencode; **codex is the live exposure** (C2).
 - **GLM**: real window 204,800; config 202,752 → 2048 wasted, safe direction (C6). Output never zeroes input.
 - **gemma**: no overflow anywhere; ~94% input wasted vs runtime's 131,072 (C3).
@@ -169,17 +175,16 @@ judgment call, not a blind auto-apply. **Apply nothing blind.**
 
 ### C4 — Central gateway `max_tokens` clamp design
 - **Decide:** add a gateway output clamp, and which mechanism.
-- **Evidence (observed against installed litellm 1.81.14):** plain `litellm_params.max_tokens` only
+- **Status:** resolved in the current architecture; kept here as the evidence trail. Plain `litellm_params.max_tokens` only
   **injects a default** when the client omits it — does **not** clamp a larger request. `modify_params:true`
   clamps `max_tokens` but **not** `max_completion_tokens` — and Codex uses `wire_api='responses'` (the
   at-risk path). Only an **`async_pre_call_deployment_hook`** clamps **both** (referenced in
-  `scripts/verify_litellm_token_clamp.py`). Live config has `drop_params:true` only, no callbacks.
-- **Open decision:** the per-model output cap **values** (tie to x-limits anchors: e.g. Kimi ≤32000,
-  GLM ≤64000, DeepSeek generous).
-- **Settle it:** run `scripts/verify_litellm_token_clamp.py` against a **temp-copy** config (export
-  `AI_LITELLM_CONFIG`) — never the live file.
-- **Recommended default:** the deployment hook with per-anchor caps. **Files:** `config/litellm_config.yaml`
-  (`litellm_settings.callbacks`), `scripts/verify_litellm_token_clamp.py`.
+  `scripts/verify_litellm_token_clamp.py`). Live config now references the production callback.
+- **Current policy:** default clamp 32,000 plus model capability/minimum-input clamp, applied to both
+  `max_tokens` and `max_completion_tokens`. The same verifier also checks estimated-token cost guardrail
+  rejection before provider dispatch.
+- **Files:** `config/litellm_config.yaml`, `config/ai_litellm_callbacks/output_clamp.py`,
+  `scripts/verify_litellm_token_clamp.py`.
 
 ### C5 — Output-cap-vs-window policy (the strategy verdict)
 - **Decide:** one coherent policy. **You cannot raise a harness's believed window above the provider's real
@@ -213,13 +218,17 @@ judgment call, not a blind auto-apply. **Apply nothing blind.**
 ---
 
 ## Confidence ledger (honest)
-- **Empirically observed (~$0.02 of live probes):** OpenRouter combined accounting + off-by-one; pre_call
-  input-only; provider implicit-output crowding; GLM real window 204800; Codex reasoning accepted on Kimi;
-  gemma serves >8192; all litellm clamp mechanisms.
+- **Empirically observed (~$0.02 of boundary probes + $1.06 C1 probe):** OpenRouter combined accounting +
+  off-by-one; pre_call input-only; provider implicit-output crowding; Codex reasoning accepted on Kimi;
+  gemma serves >8192; all litellm clamp mechanisms; **opus NOT clamped to 200K (≥211,580 observed, C1)**;
+  GLM ≥204,800 worked on a probe route.
+- **Provider-authoritative plus encoded observations:** GLM is enforced at the declared top-provider
+  `context_length=202752` (conservative; the 204,800 probe likely hit a different multiplexed route), and
+  the `>=204800` observation is preserved in `context-observations.json`.
 - **Doc-verified (not probed):** `[1m]` stripping + AUTO_COMPACT capping + MAX_CONTEXT_TOKENS/DISABLE_COMPACT
   coupling; Claude capability pattern-matching; `model_max_output_tokens` ignored by Codex.
-- **Unresolved / disputed:** whether Claude opus honors the injected 1M vs name-clamps to 200K (C1) — the
-  single biggest open question. **Inference, not observation:** `apply_patch type:"custom"` rejection (C7).
+- **Still unobserved:** full opus 1M honor above ~211K (C1; blocked by the lack of a working spend cap —
+  see recommendation doc); `apply_patch type:"custom"` rejection on these backends (C7, inference only).
 
 ## Suggested order for Codex
 1. **C2 + C5** — close the codex Kimi/GLM exposure (the live risk) with a standardized reservation; decide

@@ -192,13 +192,15 @@ Current local result with LiteLLM 1.81.14: plain config does not override a
 larger client `max_tokens`; `litellm_settings.modify_params: true` clamps
 `max_tokens` but not `max_completion_tokens`; a custom
 `async_pre_call_deployment_hook` clamps both before the mock provider receives
-the request. The production proxy does not enable this hook yet.
+the request. The production proxy enables this hook and also rejects prompts
+above the configured estimated-token guardrail before provider dispatch.
 
 Use the doctors as the contract:
 
 ```zsh
 ai-litellm model limits
 ai-litellm context matrix
+ai-litellm context observations
 ai-litellm context doctor
 ai-litellm proxy doctor
 ```

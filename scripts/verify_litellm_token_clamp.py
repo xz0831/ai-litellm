@@ -25,6 +25,8 @@ from typing import Any
 MASTER_KEY = "test-master-key"
 MODEL_NAME = "probe-model"
 BACKEND_MODEL = "openai/mock-backend"
+COST_INPUT_CAP = 16
+COST_TOTAL_CAP = 64
 
 
 @dataclasses.dataclass
@@ -154,6 +156,8 @@ from pathlib import Path
 from litellm.integrations.custom_logger import CustomLogger
 
 OUTPUT_CAP = {cap}
+COST_INPUT_CAP = {COST_INPUT_CAP}
+COST_TOTAL_CAP = {COST_TOTAL_CAP}
 MARKER_PATH = os.environ.get("TOKEN_CLAMP_MARKER")
 
 
@@ -165,6 +169,37 @@ def mark(event, payload=None):
 
 
 mark("import")
+
+
+def iter_text(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(iter_text(item))
+        return out
+    if isinstance(value, dict):
+        if "content" in value:
+            return iter_text(value.get("content"))
+        if "text" in value:
+            return iter_text(value.get("text"))
+        out = []
+        for item in value.values():
+            out.extend(iter_text(item))
+        return out
+    return [str(value)]
+
+
+def estimate_input(data):
+    text = "\\n".join(
+        part
+        for key in ("messages", "input", "prompt")
+        for part in iter_text(data.get(key))
+    )
+    return max((len(text) + 3) // 4, len(text.split())) if text else 0
 
 
 class OutputClamp(CustomLogger):
@@ -209,6 +244,16 @@ class OutputClamp(CustomLogger):
                 continue
             if value > OUTPUT_CAP:
                 kwargs[key] = OUTPUT_CAP
+        estimated_input = estimate_input(kwargs)
+        requested_output = max([
+            value for value in (kwargs.get("max_tokens"), kwargs.get("max_completion_tokens"))
+            if isinstance(value, int)
+        ] or [0])
+        if estimated_input > COST_INPUT_CAP or estimated_input + requested_output > COST_TOTAL_CAP:
+            raise ValueError(
+                "test cost guardrail rejected request before provider dispatch: "
+                f"input={{estimated_input}} total={{estimated_input + requested_output}}"
+            )
         mark("async_pre_call_deployment_hook", {{"call_type": str(call_type), "after": dict(kwargs)}})
         return kwargs
 
@@ -276,6 +321,12 @@ x-gateway-output-clamp:
   default: {output_cap}
   tokenizer_headroom: 1
   minimum_input: 1
+
+x-gateway-cost-guardrail:
+  enabled: true
+  max_estimated_input_tokens: {COST_INPUT_CAP}
+  max_estimated_total_tokens: {COST_TOTAL_CAP}
+  chars_per_token: 4
 
 litellm_settings:
   drop_params: true
@@ -516,6 +567,20 @@ def main() -> int:
                 "modify_params": False,
                 "request_overrides": {"max_completion_tokens": args.output_cap * 4},
             },
+            {
+                "name": "hook_cost_guardrail_rejects_before_provider",
+                "callback": True,
+                "modify_params": False,
+                "request_overrides": {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": " ".join(f"word{i}" for i in range(COST_INPUT_CAP + 8)),
+                        }
+                    ],
+                    "max_tokens": 1,
+                },
+            },
         ]
         results = [
             run_case(
@@ -541,6 +606,7 @@ def main() -> int:
     )
     hook_max = next(r for r in results if r["name"] == "hook_client_max_tokens_clamp")
     hook_completion = next(r for r in results if r["name"] == "hook_client_max_completion_tokens_clamp")
+    hook_cost = next(r for r in results if r["name"] == "hook_cost_guardrail_rejects_before_provider")
 
     def max_seen(result: dict[str, Any]) -> int:
         values = result["upstream_token_values"].values()
@@ -562,6 +628,10 @@ def main() -> int:
         and hook_completion["upstream_status"] == 200
         and max_seen(hook_completion) <= args.output_cap
     )
+    hook_cost_guardrail_enforced = (
+        hook_cost["client_status"] >= 400
+        and hook_cost["upstream_status"] is None
+    )
     if modify_params_enforced:
         recommended_policy = "litellm_settings.modify_params"
     elif hook_enforced:
@@ -576,6 +646,7 @@ def main() -> int:
         "plain_config_enforced_client_output_cap": plain_config_enforced,
         "modify_params_enforced_client_output_cap": modify_params_enforced,
         "hook_enforced_client_output_cap": hook_enforced,
+        "hook_enforced_cost_guardrail": hook_cost_guardrail_enforced,
         "recommended_policy": recommended_policy,
         "results": results,
     }
@@ -594,9 +665,10 @@ def main() -> int:
         print(f"plain_config_enforced_client_output_cap: {str(plain_config_enforced).lower()}")
         print(f"modify_params_enforced_client_output_cap: {str(modify_params_enforced).lower()}")
         print(f"hook_enforced_client_output_cap: {str(hook_enforced).lower()}")
+        print(f"hook_enforced_cost_guardrail: {str(hook_cost_guardrail_enforced).lower()}")
         print(f"recommended_policy: {verdict['recommended_policy']}")
 
-    return 0 if modify_params_enforced or hook_enforced else 1
+    return 0 if (modify_params_enforced or hook_enforced) and hook_cost_guardrail_enforced else 1
 
 
 if __name__ == "__main__":
