@@ -2487,7 +2487,8 @@ end
 seen = {}
 routes = model_ids.map do |model_id|
   next if model_id.to_s.empty?
-  route = "#{prefix}#{slug.call(model_id)}"
+  model_slug = slug.call(model_id)
+  route = model_slug.start_with?(prefix) ? model_slug : "#{prefix}#{model_slug}"
   next if route == prefix || existing.include?(route) || seen[route]
   seen[route] = true
   [route, model_id]

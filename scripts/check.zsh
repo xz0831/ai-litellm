@@ -60,6 +60,9 @@ test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
 test "$(ai_litellm_model_backend openrouter/deepseek/deepseek-v4-pro)" = "openrouter/deepseek/deepseek-v4-pro"
 ai_litellm_model_limits openrouter/moonshotai/kimi-k2.6 >/dev/null
 test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-v4-pro)" = "none minimal low medium high xhigh"
+runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown local-omlx-gemma4-12b)"
+[[ "$runtime_routes_dry" == *"local-omlx-markitdown -> openai/MarkItDown"* ]]
+[[ "$runtime_routes_dry" != *"local-omlx-local-omlx-gemma4-12b"* ]]
 for harness in "${(@f)$(ai_litellm_harness_names)}"; do
   ai_litellm_harness_validate "$harness"
 done
