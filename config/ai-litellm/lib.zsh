@@ -105,6 +105,60 @@ process.exit(1);
   return 1
 }
 
+ai_litellm_env_set_value() {
+  local key="$1"
+  local value="$2"
+
+  case "$key" in
+    [A-Za-z_]*)
+      ;;
+    *)
+      echo "Invalid env key: $key" >&2
+      return 1
+      ;;
+  esac
+  if [[ "$key" == *[^A-Za-z0-9_]* ]]; then
+    echo "Invalid env key: $key" >&2
+    return 1
+  fi
+  if [[ -z "$value" ]]; then
+    echo "Refusing to store an empty value for $key" >&2
+    return 1
+  fi
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "Refusing to store multiline value for $key" >&2
+    return 1
+  fi
+
+  mkdir -p "$AI_LITELLM_HOME"
+  chmod 700 "$AI_LITELLM_HOME"
+  node -e '
+const fs = require("fs");
+const [file, key, value] = process.argv.slice(1);
+if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env key: ${key}`);
+if (/[\r\n]/.test(value)) throw new Error(`env value for ${key} contains a newline`);
+let lines = [];
+try {
+  lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+} catch (_) {}
+let replaced = false;
+const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const pattern = new RegExp(`^(\\s*(?:export\\s+)?)${escaped}=.*$`);
+lines = lines.map((line) => {
+  const match = line.match(pattern);
+  if (!match) return line;
+  replaced = true;
+  return `${match[1] || ""}${key}=${value}`;
+});
+if (!replaced) lines.push(`${key}=${value}`);
+const tmp = `${file}.tmp.${process.pid}`;
+fs.writeFileSync(tmp, lines.join("\n") + "\n", {mode: 0o600});
+fs.renameSync(tmp, file);
+' "$AI_LITELLM_ENV" "$key" "$value" || return $?
+  chmod 600 "$AI_LITELLM_ENV"
+}
+
 ai_litellm_keychain_value() {
   local service="$1"
   local account="$2"
@@ -181,13 +235,34 @@ end
 ' "$AI_LITELLM_CONFIG"
 }
 
+ai_litellm_model_resolve() {
+  local requested="$1"
+  [[ -n "$requested" ]] || return 1
+  ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+target = ARGV[1].to_s
+entries = Array(config["model_list"])
+backend = ->(entry) { entry.dig("litellm_params", "model").to_s }
+normalize = ->(value) { value.to_s.sub(%r{\Aopenrouter/}, "") }
+
+match =
+  entries.find { |entry| entry["model_name"].to_s == target } ||
+  entries.find { |entry| backend.call(entry) == target } ||
+  entries.find { |entry| normalize.call(backend.call(entry)) == target }
+
+exit 1 unless match && match["model_name"]
+puts match["model_name"]
+' "$AI_LITELLM_CONFIG" "$requested"
+}
+
 ai_litellm_model_exists() {
   local model_name="$1"
-  ai_litellm_model_names | grep -Fx -- "$model_name" >/dev/null
+  ai_litellm_model_resolve "$model_name" >/dev/null 2>&1
 }
 
 ai_litellm_model_backend() {
   local model_name="$1"
+  model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || return 1
   ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
@@ -238,6 +313,7 @@ ai_litellm_litellm_python() {
 # generator/launcher derives from.
 ai_litellm_model_limits() {
   local model_name="$1"
+  model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || return 1
   ruby -ryaml -rjson -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
@@ -860,8 +936,10 @@ ai_litellm_harness_parse_model_selection() {
 
   local first_arg="${1:-}"
   if [[ -n "$first_arg" && "$first_arg" != -* ]] && ! ai_litellm_harness_is_subcommand "$harness" "$first_arg"; then
-    if ai_litellm_model_exists "$first_arg"; then
-      AI_LITELLM_SELECTED_MODEL="$first_arg"
+    local resolved_first_arg
+    resolved_first_arg="$(ai_litellm_model_resolve "$first_arg" 2>/dev/null)" || resolved_first_arg=""
+    if [[ -n "$resolved_first_arg" ]]; then
+      AI_LITELLM_SELECTED_MODEL="$resolved_first_arg"
       AI_LITELLM_SELECTED_MODEL_EXPLICIT=1
       AI_LITELLM_SELECTED_MODEL_CONSUMED=1
     fi
@@ -1116,6 +1194,7 @@ for (const model of runtime.expectedModels || []) console.log(model);
 
 ai_litellm_model_runtime() {
   local model_name="$1"
+  model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || return 1
   local backend runtime prefix backend_model
   backend="$(ai_litellm_model_backend "$model_name" 2>/dev/null || true)"
   backend_model="${backend#openai/}"
@@ -1722,7 +1801,19 @@ ai_litellm_status() {
 
 ai_litellm_list() {
   echo "LiteLLM model_name entries:"
-  ai_litellm_model_names | sed 's/^/  /'
+  ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+Array(config["model_list"]).each do |entry|
+  name = entry["model_name"]
+  backend = entry.dig("litellm_params", "model")
+  next unless name
+  if backend && backend != name
+    printf("  %-22s -> %s\n", name, backend)
+  else
+    puts "  #{name}"
+  end
+end
+' "$AI_LITELLM_CONFIG"
 }
 
 ai_litellm_route_info() {
@@ -1739,6 +1830,9 @@ ai_litellm_route_info() {
   fi
 
   local model_filter="$1"
+  if [[ -n "$model_filter" ]]; then
+    model_filter="$(ai_litellm_model_resolve "$model_filter" 2>/dev/null || printf '%s\n' "$model_filter")"
+  fi
   local payload
   if ! payload="$(ai_litellm_curl_auth "$master_key" --max-time 5 -fsS "$(ai_litellm_base_url)/model/info")"; then
     echo "LiteLLM route metadata unavailable at $(ai_litellm_base_url)/model/info; is the proxy running?" >&2
@@ -1764,7 +1858,7 @@ ai_litellm_probe_route() {
     return 1
   }
 
-  ai_litellm_model_exists "$model_name" || {
+  model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || {
     echo "fail $model_name: not present in $AI_LITELLM_CONFIG" >&2
     return 1
   }
@@ -1817,6 +1911,7 @@ openrouter-key-status() {
 
   if ai_litellm_env_value OPENROUTER_API_KEY >/dev/null 2>&1; then
     echo "OPENROUTER_API_KEY: available in env file"
+    echo "Env file: $AI_LITELLM_ENV"
     return 0
   fi
 
@@ -1827,6 +1922,7 @@ openrouter-key-status() {
   fi
 
   echo "OPENROUTER_API_KEY: not found"
+  echo "Expected env file: $AI_LITELLM_ENV"
   echo "Expected Keychain service: $OPENROUTER_KEYCHAIN_SERVICE"
   return 1
 }
@@ -1839,6 +1935,7 @@ litellm-master-key-status() {
 
   if ai_litellm_env_value LITELLM_MASTER_KEY >/dev/null 2>&1; then
     echo "LITELLM_MASTER_KEY: available in env file"
+    echo "Env file: $AI_LITELLM_ENV"
     return 0
   fi
 
@@ -1849,6 +1946,7 @@ litellm-master-key-status() {
   fi
 
   echo "LITELLM_MASTER_KEY: not found"
+  echo "Expected env file: $AI_LITELLM_ENV"
   echo "Expected Keychain service: $LITELLM_MASTER_KEYCHAIN_SERVICE"
   return 1
 }
@@ -1866,6 +1964,51 @@ litellm-master-key-load() {
 ai_litellm_key_status() {
   openrouter-key-status
   litellm-master-key-status
+}
+
+ai_litellm_key_name_to_env() {
+  local name="$1"
+  [[ -n "$name" ]] || return 1
+  case "$name" in
+    openrouter|OPENROUTER_API_KEY) printf 'OPENROUTER_API_KEY\n' ;;
+    litellm-master|master|LITELLM_MASTER_KEY) printf 'LITELLM_MASTER_KEY\n' ;;
+    brave|brave-search|BRAVE_SEARCH_API_KEY) printf 'BRAVE_SEARCH_API_KEY\n' ;;
+    *)
+      local normalized
+      normalized="${name:u}"
+      normalized="${normalized//-/_}"
+      if [[ "$normalized" == *[^A-Z0-9_]* ]]; then
+        echo "Invalid key name: $name" >&2
+        return 1
+      fi
+      case "$normalized" in
+        *_API_KEY|*_KEY) printf '%s\n' "$normalized" ;;
+        *) printf '%s_API_KEY\n' "$normalized" ;;
+      esac
+      ;;
+  esac
+}
+
+ai_litellm_key_set() {
+  local name="${1:-}"
+  local value="${2:-}"
+  if [[ -z "$name" || $# -gt 2 ]]; then
+    echo "Usage: ai-litellm key set <openrouter|ENV_VAR|provider-name> [value]" >&2
+    echo "Omit [value] to enter it without echoing." >&2
+    return 1
+  fi
+
+  local env_key
+  env_key="$(ai_litellm_key_name_to_env "$name")" || return $?
+  if [[ -z "$value" ]]; then
+    printf 'Value for %s: ' "$env_key" >&2
+    IFS= read -rs value
+    printf '\n' >&2
+  fi
+
+  ai_litellm_env_set_value "$env_key" "$value" || return $?
+  echo "Stored $env_key in $AI_LITELLM_ENV"
+  echo "Run 'ai-litellm sync' if the proxy is already running."
 }
 
 ai_litellm_logs() {
@@ -2362,6 +2505,7 @@ ai_litellm_doctor() {
 # Token-limit table from the single source. Powers `ai-litellm model limits`.
 ai_litellm_limits_table() {
   local filter="$1"
+  [[ -z "$filter" ]] || filter="$(ai_litellm_model_resolve "$filter" 2>/dev/null || printf '%s\n' "$filter")"
   ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 filter = ARGV[1] || ""
@@ -2838,6 +2982,10 @@ PY
 
 ai_litellm_model_reasoning_allowed_efforts() {
   local model="$1"
+  model="$(ai_litellm_model_resolve "$model" 2>/dev/null)" || {
+    echo "Unknown LiteLLM model_name or provider model: $model" >&2
+    return 1
+  }
   ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 target = ARGV[1]
@@ -2873,6 +3021,10 @@ ai_litellm_model_reasoning_update() {
     echo "Usage: ai-litellm model reasoning set <model> <effort>" >&2
     return 1
   fi
+  model="$(ai_litellm_model_resolve "$model" 2>/dev/null)" || {
+    echo "Unknown LiteLLM model_name or provider model: $model" >&2
+    return 1
+  }
 
   if [[ "$mode" == "set" ]]; then
     local allowed
@@ -3005,8 +3157,8 @@ ai_litellm_model_reasoning_probe() {
     return 1
   fi
 
-  ai_litellm_model_exists "$model" || {
-    echo "Unknown LiteLLM model_name: $model" >&2
+  model="$(ai_litellm_model_resolve "$model" 2>/dev/null)" || {
+    echo "Unknown LiteLLM model_name or provider model: $model" >&2
     return 1
   }
   local allowed
@@ -4804,8 +4956,19 @@ ai_litellm_cmd_key() {
   local verb="$1"; [[ $# -gt 0 ]] && shift
   case "$verb" in
     status|"") ai_litellm_key_status ;;
-    *) echo "Usage: ai-litellm key status" >&2; return 1 ;;
+    set)       ai_litellm_key_set "$@" ;;
+    *) echo "Usage: ai-litellm key status|set <openrouter|ENV_VAR|provider-name> [value]" >&2; return 1 ;;
   esac
+}
+
+ai_litellm_uninstall() {
+  local script="$AI_LITELLM_FABRIC_HOME/scripts/uninstall.zsh"
+  if [[ ! -f "$script" ]]; then
+    echo "Installed uninstall script not found: $script" >&2
+    echo "Run scripts/uninstall.zsh from the repository checkout, or reinstall the package." >&2
+    return 1
+  fi
+  zsh "$script" --prefix "$AI_LITELLM_FABRIC_HOME" "$@"
 }
 
 ai_litellm_cmd_context() {
@@ -4888,8 +5051,9 @@ Usage: ai-litellm <group> <verb> [args]
   Context:  ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]|doctor
   Reason:   ai-litellm reasoning matrix [model]|probe <model> [effort]|doctor
   Audit:    ai-litellm audit model-policy
-  Key:      ai-litellm key status
+  Key:      ai-litellm key status|set <openrouter|ENV_VAR|provider-name> [value]
   Sync:     ai-litellm sync          Regenerate derived configs + reload proxy from the single source
+  Delete:   ai-litellm uninstall     Remove package directory and global shims
   Caps:     ai-litellm capabilities  Proxy + runtime capability summary
 
 Flat forms (start, stop, status, route-info, harnesses, launch, ...) still work but
@@ -4913,6 +5077,7 @@ ai_litellm() {
     audit)        ai_litellm_cmd_audit "$@" ;;
     key)          ai_litellm_cmd_key "$@" ;;
     sync|--sync)  ai_litellm_sync "$@" ;;
+    uninstall)    ai_litellm_uninstall "$@" ;;
     capabilities|--capabilities) ai_litellm_capabilities ;;
 
     # ── Deprecated flat aliases (still work; warn + delegate) ──

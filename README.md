@@ -47,19 +47,23 @@ Installed package/runtime state:
 - `~/.local/share/ai-litellm-fabric/config`: rendered wrapper config
 - `~/.local/share/ai-litellm-fabric/bin`: installed wrapper executables
 - `~/.local/share/ai-litellm-fabric/docs`: installed maintainer guide
+- `~/.local/share/ai-litellm-fabric/scripts`: installed package tools, including
+  uninstall
 - `~/.local/share/ai-litellm-fabric/state`: proxy logs, pid files, config
-  hashes, harness sessions, sqlite databases, caches, generated configs
+  hashes, harness sessions, sqlite databases, caches, generated configs, local
+  private env file
 - `~/.local/bin`: global shims that point into the package
 
 Still not tracked or installed:
 
 - provider API keys
+- local model weights, including oMLX models under `~/.omlx/models`
 
 ## Install
 
 Prerequisites on the target Mac:
 
-- zsh, node, ruby, jq, curl
+- zsh, node, ruby, jq, curl, python3, perl, rg
 - `litellm`
 - `~/.local/bin` on `PATH`
 
@@ -80,11 +84,13 @@ Install:
 ./scripts/install.zsh
 ```
 
-The installer writes only the LiteLLM wrapper layer:
+The installer preflights shared dependencies, writes only the LiteLLM wrapper
+layer, and creates a local LiteLLM master key if one is not already available:
 
 - `~/.local/share/ai-litellm-fabric/config`
 - `~/.local/share/ai-litellm-fabric/bin`
 - `~/.local/share/ai-litellm-fabric/docs`
+- `~/.local/share/ai-litellm-fabric/scripts`
 - `~/.local/share/ai-litellm-fabric/state`
 - `~/.local/bin/ai-litellm`
 - `~/.local/bin/claude-litellm`
@@ -100,7 +106,13 @@ It does not write `~/.claude`, `~/.codex`, or `~/litellm_config.yaml`.
 Uninstall the package/shims:
 
 ```zsh
-./scripts/uninstall.zsh
+ai-litellm uninstall
+```
+
+The installed fallback is also self-contained:
+
+```zsh
+~/.local/share/ai-litellm-fabric/scripts/uninstall.zsh
 ```
 
 If migrating from an older spread-out install, preview legacy cleanup first:
@@ -111,7 +123,22 @@ If migrating from an older spread-out install, preview legacy cleanup first:
 
 ## Secrets
 
-Store keys outside git. Recommended macOS Keychain entries:
+Store keys outside git. The simple first-use path stores secrets in the package's
+private env file, which is removed with `ai-litellm uninstall`:
+
+```zsh
+ai-litellm key set openrouter
+ai-litellm key status
+```
+
+You can also set arbitrary provider env keys:
+
+```zsh
+ai-litellm key set OPENAI_API_KEY
+ai-litellm key set anthropic
+```
+
+Advanced macOS Keychain entries are still supported:
 
 ```zsh
 security add-generic-password -U -s openrouter-api-key -a "$USER" -w '...'
@@ -126,10 +153,12 @@ dash form of the variable name. Example: `OPENAI_API_KEY` uses service
 ## First Run
 
 ```zsh
-ai-litellm proxy doctor
+ai-litellm key set openrouter
+ai-litellm key status
+ai-litellm sync
 ai-litellm context doctor
 ai-litellm reasoning doctor
-ai-litellm sync
+ai-litellm proxy doctor
 ```
 
 `ai-litellm sync` regenerates derived config and restarts the shared proxy by
@@ -142,6 +171,20 @@ metadata commands must skip missing native CLIs cleanly; only launching that
 specific harness requires its native command. `sync` also ensures the isolated
 Claude Code settings file exists without touching `~/.claude`.
 
+OpenRouter backend names can be used directly where a model is accepted. The
+wrapper resolves them back to the configured `model_name` without duplicating
+routes in git:
+
+```zsh
+ai-litellm model limits openrouter/deepseek/deepseek-v4-pro
+ai-litellm model info openrouter/deepseek/deepseek-v4-pro
+```
+
+For Codex, a raw provider slug is resolved to a Codex-safe facade such as
+`gpt-5.5` when that backend is shared by multiple routes. The same provider
+slug can be used in place of the model argument in the harness smoke tests
+below.
+
 Then test one harness:
 
 ```zsh
@@ -150,6 +193,14 @@ codex-litellm exec --skip-git-repo-check --sandbox read-only 'Reply with exactly
 ```
 
 Those harness smoke tests make real provider requests and may be billable.
+
+## Local Models
+
+The repository tracks only local runtime wiring, not model weights. For example,
+`local-omlx-gemma4-12b` is a LiteLLM route to `http://127.0.0.1:8000/v1` plus
+runtime metadata for oMLX. The actual oMLX installation and files under
+`~/.omlx/models` remain machine-local and must be prepared separately on each
+computer that wants to run that route.
 
 ## Token Budget Policy
 

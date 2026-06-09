@@ -42,8 +42,9 @@ _claude_litellm_target_model_for_request() {
     return 0
   fi
 
-  ai_litellm_model_exists "$requested" || return 1
-  printf '%s\n' "$requested"
+  local resolved_model
+  resolved_model="$(ai_litellm_model_resolve "$requested" 2>/dev/null)" || return 1
+  printf '%s\n' "$resolved_model"
 }
 
 _claude_litellm_resolve_model_arg() {
@@ -60,8 +61,9 @@ _claude_litellm_resolve_model_arg() {
     return 0
   fi
 
-  ai_litellm_model_exists "$requested" || return 1
-  printf '%s\n' "$requested"
+  local resolved_model
+  resolved_model="$(ai_litellm_model_resolve "$requested" 2>/dev/null)" || return 1
+  printf '%s\n' "$resolved_model"
 }
 
 claude-litellm-start() {
@@ -101,7 +103,7 @@ claude-litellm() {
 
   case "$1" in
     -h|--help)
-      echo "Usage: claude-litellm [opus|sonnet|haiku|model_name] [claude args...]"
+      echo "Usage: claude-litellm [opus|sonnet|haiku|model_name|provider_model] [claude args...]"
       echo "       claude-litellm --list|--status   (harness-specific info)"
       echo "Reasoning defaults: ai-litellm harness reasoning [set|unset] claude"
       echo "Proxy lifecycle moved to: ai-litellm proxy start|stop|restart|logs|doctor"
@@ -153,11 +155,11 @@ claude-litellm() {
   local claude_model_arg
   local target_model
   target_model="$(_claude_litellm_target_model_for_request "$requested")" || {
-    echo "Unknown claude-litellm alias or LiteLLM model_name: ${requested:-$(_claude_litellm_json default 2>/dev/null || printf 'sonnet')}" >&2
+    echo "Unknown claude-litellm alias, LiteLLM model_name, or provider model: ${requested:-$(_claude_litellm_json default 2>/dev/null || printf 'sonnet')}" >&2
     return 1
   }
   claude_model_arg="$(_claude_litellm_resolve_model_arg "$requested")" || {
-    echo "Unknown claude-litellm alias or LiteLLM model_name: ${requested:-$(_claude_litellm_json default 2>/dev/null || printf 'sonnet')}" >&2
+    echo "Unknown claude-litellm alias, LiteLLM model_name, or provider model: ${requested:-$(_claude_litellm_json default 2>/dev/null || printf 'sonnet')}" >&2
     return 1
   }
 

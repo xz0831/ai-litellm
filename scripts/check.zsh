@@ -36,13 +36,14 @@ fi
 tmp_home="$(mktemp -d)"
 spaced_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home" "$spaced_home"' EXIT
-HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
+LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-$$" HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
 HOME="$tmp_home" zsh -fc '
 prefix="$HOME/.local/share/ai-litellm-fabric"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/lib.zsh"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/context-observations.json"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/litellm_config.yaml"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai_litellm_callbacks/output_clamp.py"
+test -x "$HOME/.local/share/ai-litellm-fabric/scripts/uninstall.zsh"
 test -x "$HOME/.local/share/ai-litellm-fabric/bin/claude-litellm"
 test -x "$HOME/.local/bin/claude-litellm"
 "$HOME/.local/bin/ai-litellm" --help >/dev/null
@@ -50,6 +51,14 @@ test -x "$HOME/.local/bin/claude-litellm"
 grep -q "AI_LITELLM_FABRIC_HOME=" "$HOME/.local/bin/ai-litellm"
 grep -q "exec.*bin/ai-litellm" "$HOME/.local/bin/ai-litellm"
 source "$prefix/config/ai-litellm/lib.zsh"
+grep -q "^LITELLM_MASTER_KEY=" "$prefix/state/ai-litellm/env"
+test "$(stat -f %Lp "$prefix/state/ai-litellm/env")" = "600"
+test -n "$(ai_litellm_master_key)"
+test "$(ai_litellm_model_resolve openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
+test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
+test "$(ai_litellm_model_backend openrouter/deepseek/deepseek-v4-pro)" = "openrouter/deepseek/deepseek-v4-pro"
+ai_litellm_model_limits openrouter/moonshotai/kimi-k2.6 >/dev/null
+test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-v4-pro)" = "none minimal low medium high xhigh"
 for harness in "${(@f)$(ai_litellm_harness_names)}"; do
   ai_litellm_harness_validate "$harness"
 done
@@ -129,14 +138,24 @@ claude_settings="$(ai_litellm_harness_json claude paths.settingsArg)"
 test -f "$claude_settings"
 jq empty "$claude_settings"
 test "$(stat -f %Lp "$claude_settings")" = "600"
+source "$prefix/config/claude-litellm/shell.zsh"
+test "$(_claude_litellm_target_model_for_request openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
+test "$(_claude_litellm_resolve_model_arg openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
 "$HOME/.local/bin/claude-litellm" --status >/dev/null
+source "$prefix/config/codex-litellm/shell.zsh"
+test "$(_codex_litellm_resolve_model openrouter/deepseek/deepseek-v4-pro)" = "gpt-5.5"
+test "$(_codex_litellm_resolve_model DeepSeek-V4-Pro)" = "gpt-5.5"
+test "$(_codex_litellm_resolve_model openrouter/moonshotai/kimi-k2.6)" = "gpt-5.4"
+test "$(_codex_litellm_resolve_model openai/local-omlx-gemma4-12b)" = "local-omlx-gemma4-12b"
 ai_litellm_render_opencode_config opencode
 test "$(stat -f %Lp "$prefix/state")" = "700"
 test "$(stat -f %Lp "$prefix/state/ai-litellm")" = "700"
 test "$(stat -f %Lp "$prefix/state/opencode-litellm/opencode.json")" = "600"
-print -r -- "OPENROUTER_API_KEY=PLACEHOLDER\$(touch $HOME/PWNED)END" > "$prefix/state/ai-litellm/env"
+"$HOME/.local/bin/ai-litellm" key set openrouter "PLACEHOLDER\$(touch $HOME/PWNED)END" >/dev/null
 test "$(ai_litellm_env_value OPENROUTER_API_KEY)" = "PLACEHOLDER\$(touch $HOME/PWNED)END"
+test -n "$(ai_litellm_env_value LITELLM_MASTER_KEY)"
 test ! -e "$HOME/PWNED"
+"$HOME/.local/bin/ai-litellm" uninstall --dry-run >/dev/null
 sleep 60 &
 foreign_pid=$!
 mkdir -p "$HOME/.config/ai-litellm"
@@ -185,16 +204,16 @@ test ! -e "$HOME/.codex"
 '
 
 spaced_prefix="$spaced_home/with space/ai-litellm-fabric"
-HOME="$spaced_home" "$repo_root/scripts/install.zsh" --prefix "$spaced_prefix" >/dev/null
+LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-spaced-$$" HOME="$spaced_home" "$repo_root/scripts/install.zsh" --prefix "$spaced_prefix" >/dev/null
 HOME="$spaced_home" "$spaced_home/.local/bin/ai-litellm" --help >/dev/null
 grep -q "'$spaced_prefix'" "$spaced_home/.local/bin/ai-litellm"
-HOME="$spaced_home" "$repo_root/scripts/install.zsh" --prefix "$spaced_prefix" >/dev/null
+LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-spaced-$$" HOME="$spaced_home" "$repo_root/scripts/install.zsh" --prefix "$spaced_prefix" >/dev/null
 if find "$spaced_home/.local" -name "*.bak.*" | grep -q .; then
   echo "Unexpected backup files after identical reinstall" >&2
   find "$spaced_home/.local" -name "*.bak.*" >&2
   exit 1
 fi
-HOME="$spaced_home" "$repo_root/scripts/uninstall.zsh" --prefix "$spaced_prefix" >/dev/null
+HOME="$spaced_home" "$spaced_home/.local/bin/ai-litellm" uninstall >/dev/null
 test ! -e "$spaced_prefix"
 if find "$spaced_home/.local/bin" -type f | grep -q .; then
   echo "Unexpected command or backup files after uninstall" >&2

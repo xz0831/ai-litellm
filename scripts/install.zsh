@@ -9,7 +9,7 @@ bin_dir="$HOME/.local/bin"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install.zsh [--dry-run] [--prefix PATH]
+Usage: scripts/install.zsh [--dry-run] [--prefix PATH] [--skip-preflight]
 
 Installs ai-litellm-fabric as one package directory plus global command shims.
 
@@ -28,13 +28,21 @@ Global shims:
 It does not write ~/.claude or ~/.codex and does not replace native claude/codex.
 Missing native harness commands are allowed; they are only required when the
 matching *-litellm command is used.
+
+The installer checks shared wrapper dependencies, but not optional native harness
+CLIs. It also creates a local LiteLLM master key if one is not already available.
 EOF
 }
+
+skip_preflight=0
 
 while (( $# > 0 )); do
   case "$1" in
     --dry-run)
       dry_run=1
+      ;;
+    --skip-preflight)
+      skip_preflight=1
       ;;
     --prefix)
       shift
@@ -69,6 +77,29 @@ run() {
   else
     "$@"
   fi
+}
+
+preflight() {
+  local -a required missing
+  required=(zsh node ruby jq curl python3 perl rg litellm)
+  missing=()
+
+  local cmd
+  for cmd in "${required[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+
+  (( ${#missing[@]} == 0 )) && return 0
+
+  echo "Missing shared ai-litellm-fabric dependencies: ${missing[*]}" >&2
+  echo "Install the missing commands before using the package." >&2
+  echo "Typical macOS packages: brew install node jq ripgrep" >&2
+  echo "LiteLLM: python3 -m pip install 'litellm[proxy]' or pipx install 'litellm[proxy]'" >&2
+  if (( dry_run )); then
+    echo "Dry run continues after preflight warning." >&2
+    return 0
+  fi
+  exit 1
 }
 
 backup_if_exists() {
@@ -143,6 +174,101 @@ install_shim() {
   fi
 }
 
+env_file_has_value() {
+  local file_path="$1"
+  local key="$2"
+  [[ -f "$file_path" ]] || return 1
+  node -e '
+const fs = require("fs");
+const [file, wanted] = process.argv.slice(1);
+for (let line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+  line = line.trim();
+  if (!line || line.startsWith("#")) continue;
+  if (line.startsWith("export ")) line = line.slice("export ".length).trimStart();
+  const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+  if (!match || match[1] !== wanted) continue;
+  if (match[2].length > 0) process.exit(0);
+}
+process.exit(1);
+' "$file_path" "$key"
+}
+
+env_file_set_value() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+  if (( dry_run )); then
+    log "dry-run set ${key} in ${file_path}"
+    return 0
+  fi
+
+  mkdir -p "${file_path:h}"
+  node -e '
+const fs = require("fs");
+const [file, key, value] = process.argv.slice(1);
+if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env key: ${key}`);
+if (/[\r\n]/.test(value)) throw new Error(`env value for ${key} contains a newline`);
+let lines = [];
+try {
+  lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+} catch (_) {}
+let replaced = false;
+const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const pattern = new RegExp(`^(\\s*(?:export\\s+)?)${escaped}=.*$`);
+lines = lines.map((line) => {
+  const match = line.match(pattern);
+  if (!match) return line;
+  replaced = true;
+  return `${match[1] || ""}${key}=${value}`;
+});
+if (!replaced) lines.push(`${key}=${value}`);
+const tmp = `${file}.tmp.${process.pid}`;
+fs.writeFileSync(tmp, lines.join("\n") + "\n", {mode: 0o600});
+fs.renameSync(tmp, file);
+' "$file_path" "$key" "$value"
+  chmod 600 "$file_path"
+}
+
+keychain_has_value() {
+  local service="$1"
+  local account="$2"
+  [[ -n "$service" && -n "$account" ]] || return 1
+  command -v security >/dev/null 2>&1 || return 1
+  security find-generic-password -s "$service" -a "$account" -w >/dev/null 2>&1
+}
+
+ensure_litellm_master_key() {
+  [[ -n "${LITELLM_MASTER_KEY:-}" ]] && {
+    log "LiteLLM master key: current environment"
+    return 0
+  }
+
+  local env_file="$prefix/state/ai-litellm/env"
+  if (( dry_run )); then
+    log "dry-run ensure LITELLM_MASTER_KEY in $env_file when environment/Keychain do not provide one"
+    return 0
+  fi
+
+  if env_file_has_value "$env_file" LITELLM_MASTER_KEY; then
+    log "LiteLLM master key: existing package env file"
+    return 0
+  fi
+
+  local service account
+  service="${LITELLM_MASTER_KEYCHAIN_SERVICE:-litellm-master-key}"
+  account="${LITELLM_MASTER_KEYCHAIN_ACCOUNT:-${USER:-}}"
+  if keychain_has_value "$service" "$account"; then
+    log "LiteLLM master key: macOS Keychain"
+    return 0
+  fi
+
+  local generated
+  generated="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+  env_file_set_value "$env_file" LITELLM_MASTER_KEY "$generated"
+  log "LiteLLM master key: generated in $env_file"
+}
+
 require_file() {
   local file_path="$1"
   [[ -f "$file_path" ]] || {
@@ -167,13 +293,16 @@ for file in \
   "$repo_root/config/claude-litellm/shell.zsh" \
   "$repo_root/config/codex-litellm/settings.json" \
   "$repo_root/config/codex-litellm/shell.zsh" \
-  "$repo_root/docs/AI_AGENT_LITELLM_ARCHITECTURE.md"; do
+  "$repo_root/docs/AI_AGENT_LITELLM_ARCHITECTURE.md" \
+  "$repo_root/scripts/uninstall.zsh"; do
   require_file "$file"
 done
 
 for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status; do
   require_file "$repo_root/bin/$script"
 done
+
+(( skip_preflight )) || preflight
 
 log "Installing ai-litellm-fabric from $repo_root"
 log "Package: $prefix"
@@ -187,6 +316,7 @@ for dir in \
   "$prefix/config/claude-litellm" \
   "$prefix/config/codex-litellm" \
   "$prefix/docs" \
+  "$prefix/scripts" \
   "$prefix/state/ai-litellm" \
   "$prefix/state/claude-litellm/claude-config" \
   "$prefix/state/codex-litellm/codex-home" \
@@ -226,15 +356,21 @@ install_rendered "$repo_root/config/codex-litellm/settings.json" "$prefix/config
 install_rendered "$repo_root/config/codex-litellm/shell.zsh" "$prefix/config/codex-litellm/shell.zsh"
 
 install_rendered "$repo_root/docs/AI_AGENT_LITELLM_ARCHITECTURE.md" "$prefix/docs/AI_AGENT_LITELLM_ARCHITECTURE.md"
+install_executable "$repo_root/scripts/uninstall.zsh" "$prefix/scripts/uninstall.zsh"
 
 for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status; do
   install_executable "$repo_root/bin/$script" "$prefix/bin/$script"
   install_shim "$script"
 done
 
+ensure_litellm_master_key
+
 log "Installed ai-litellm-fabric package."
 log "Delete with:"
-log "  $repo_root/scripts/uninstall.zsh --prefix ${(q)prefix}"
+log "  ai-litellm uninstall"
+log "  ${(q)prefix}/scripts/uninstall.zsh --prefix ${(q)prefix}"
 log "Next:"
-log "  ai-litellm proxy doctor"
+log "  ai-litellm key set openrouter"
+log "  ai-litellm sync"
 log "  ai-litellm context doctor"
+log "  ai-litellm proxy doctor"

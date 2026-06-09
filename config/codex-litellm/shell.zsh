@@ -27,6 +27,66 @@ console.log(value);
 ' "$CODEX_LITELLM_SETTINGS" "$1"
 }
 
+_codex_litellm_resolve_route_model() {
+  local requested="$1"
+  if [[ -z "$requested" ]]; then
+    requested="$(_codex_litellm_default_alias)"
+  fi
+
+  ruby -ryaml -rjson -e '
+config_path, settings_path, descriptor_path, requested = ARGV
+config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
+settings = JSON.parse(File.read(settings_path))
+descriptor = JSON.parse(File.read(descriptor_path))
+entries = Array(config["model_list"])
+aliases = settings["aliases"] || {}
+default_model = descriptor.dig("models", "default") || "gpt-5.5"
+target = requested.to_s.empty? ? default_model : requested.to_s
+target = aliases[target] if aliases[target]
+
+backend = ->(entry) { entry.dig("litellm_params", "model").to_s }
+normalize = ->(value) { value.to_s.sub(%r{\Aopenrouter/}, "") }
+codex_slug = ->(name) { name.to_s.match?(/\A(?:gpt-|codex-|local-)/) }
+preferred = []
+preferred << default_model
+aliases.each_value { |value| preferred << value }
+Array(descriptor.dig("models", "localCatalogEntries")).each { |entry| preferred << entry["slug"] }
+preferred = preferred.compact.uniq
+
+pick = lambda do |matches|
+  selected = nil
+  preferred.each do |name|
+    found = matches.find { |entry| entry["model_name"].to_s == name }
+    if found
+      selected = found
+      break
+    end
+  end
+  selected || matches.find { |entry| codex_slug.call(entry["model_name"]) } || matches.first
+end
+
+exact = entries.find { |entry| entry["model_name"].to_s == target }
+if exact
+  if codex_slug.call(exact["model_name"])
+    puts exact["model_name"]
+    exit
+  end
+  same_backend = entries.select { |entry| backend.call(entry) == backend.call(exact) }
+  picked = pick.call(same_backend)
+  puts((picked || exact)["model_name"])
+  exit
+end
+
+matches = entries.select do |entry|
+  provider_model = backend.call(entry)
+  provider_model == target || normalize.call(provider_model) == target
+end
+picked = pick.call(matches)
+exit 1 unless picked && picked["model_name"]
+puts picked["model_name"]
+' "$AI_LITELLM_CONFIG" "$CODEX_LITELLM_SETTINGS" "$(ai_litellm_harness_descriptor "$CODEX_LITELLM_HARNESS")" "$requested"
+}
+
 _codex_litellm_route_target() {
   ai_litellm_model_backend "$1"
 }
@@ -80,11 +140,7 @@ _codex_litellm_resolve_model() {
     requested="$(_codex_litellm_default_alias)"
   fi
 
-  local target_model
-  target_model="$(_codex_litellm_alias_target "$requested" 2>/dev/null)" || target_model="$requested"
-
-  ai_litellm_model_exists "$target_model" || return 1
-  printf '%s\n' "$target_model"
+  _codex_litellm_resolve_route_model "$requested"
 }
 
 codex-litellm-render-config() {
@@ -296,9 +352,10 @@ codex-litellm() {
 
   case "$1" in
     -h|--help)
-      echo "Usage: codex-litellm [alias|model_name] [codex args...]"
+      echo "Usage: codex-litellm [alias|model_name|provider_model] [codex args...]"
       echo "       codex-litellm exec \"prompt\""
       echo "       codex-litellm gpt-5.5 exec \"prompt\""
+      echo "       codex-litellm openrouter/deepseek/deepseek-v4-pro exec \"prompt\""
       echo "       codex-litellm --list|--status|--route-info [model]|--refresh-catalog   (codex-specific)"
       echo "Reasoning defaults: ai-litellm harness reasoning [set|unset] codex"
       echo "Proxy lifecycle moved to: ai-litellm proxy start|stop|restart|logs|doctor"
@@ -369,7 +426,7 @@ codex-litellm() {
   local model
   if (( explicit_model )); then
     model="$(_codex_litellm_resolve_model "$requested")" || {
-      echo "Unknown codex-litellm alias or LiteLLM model_name: $requested" >&2
+      echo "Unknown codex-litellm alias, LiteLLM model_name, or provider model: $requested" >&2
       return 1
     }
 
