@@ -11,7 +11,8 @@ export CLAUDE_LITELLM_HARNESS="${CLAUDE_LITELLM_HARNESS:-claude}"
 export CLAUDE_LITELLM_HOME="${CLAUDE_LITELLM_HOME:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.home 2>/dev/null || printf "${AI_LITELLM_STATE_HOME:-${AI_LITELLM_FABRIC_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm-fabric}/state}/claude-litellm")}"
 export CLAUDE_LITELLM_SETTINGS="${CLAUDE_LITELLM_SETTINGS:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settings 2>/dev/null || printf "$CLAUDE_LITELLM_HOME/settings.json")}"
 export CLAUDE_LITELLM_CLAUDE_CONFIG="${CLAUDE_LITELLM_CLAUDE_CONFIG:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.configDir 2>/dev/null || printf "$CLAUDE_LITELLM_HOME/claude-config")}"
-export CLAUDE_LITELLM_SETTINGS_ARG="${CLAUDE_LITELLM_SETTINGS_ARG:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settingsArg 2>/dev/null || printf "$CLAUDE_LITELLM_CLAUDE_CONFIG/settings.json")}"
+export CLAUDE_LITELLM_SETTINGS_ARG="${CLAUDE_LITELLM_SETTINGS_ARG:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settingsArg 2>/dev/null || printf "$CLAUDE_LITELLM_HOME/overlay-settings.json")}"
+export CLAUDE_LITELLM_SETTINGS_ARG_PROXY="${CLAUDE_LITELLM_SETTINGS_ARG_PROXY:-$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settingsArgProxy 2>/dev/null || printf "$CLAUDE_LITELLM_HOME/overlay-settings-proxy.json")}"
 export CLAUDE_LITELLM_CONFIG="${CLAUDE_LITELLM_CONFIG:-$AI_LITELLM_CONFIG}"
 
 _claude_litellm_json() {
@@ -136,6 +137,9 @@ claude-litellm-restart() {
 claude-litellm-status() {
   echo "Claude settings: $CLAUDE_LITELLM_SETTINGS"
   echo "Claude config:   $CLAUDE_LITELLM_CLAUDE_CONFIG"
+  echo "Overlay direct:  $CLAUDE_LITELLM_SETTINGS_ARG"
+  echo "Overlay proxy:   $CLAUDE_LITELLM_SETTINGS_ARG_PROXY"
+  echo "Shared env root: $(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" isolation.sharedEnvironment.targetRoot 2>/dev/null || printf '(disabled)')"
   echo "Claude mode:     $(_claude_litellm_default_mode 2>/dev/null || printf 'unknown')"
   echo "Direct base URL: $(ai_litellm_harness_template_json "$CLAUDE_LITELLM_HARNESS" provider.baseUrl 2>/dev/null || printf 'https://openrouter.ai/api')"
   ai_litellm_status
@@ -168,6 +172,36 @@ _claude_litellm_reasoning_args() {
   fi
 }
 
+# Shared launch preparation: ensure the shared-environment symlink layer,
+# refuse to launch if the shared settings surface carries backend routing
+# keys, and render both per-mode --settings overlays.
+_claude_litellm_launch_prepare() {
+  # Overlay paths inherited from a pre-upgrade shell point inside the config
+  # dir, where settings.json is now a shared symlink; rendering there would
+  # chmod/replace the native file through the link. Reset such values.
+  local var fallback
+  for var in CLAUDE_LITELLM_SETTINGS_ARG CLAUDE_LITELLM_SETTINGS_ARG_PROXY; do
+    case "${(P)var}" in
+      "$CLAUDE_LITELLM_CLAUDE_CONFIG"/*)
+        if [[ "$var" == CLAUDE_LITELLM_SETTINGS_ARG ]]; then
+          fallback="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settingsArg 2>/dev/null || printf '%s/overlay-settings.json' "$CLAUDE_LITELLM_HOME")"
+        else
+          fallback="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" paths.settingsArgProxy 2>/dev/null || printf '%s/overlay-settings-proxy.json' "$CLAUDE_LITELLM_HOME")"
+        fi
+        if [[ "$fallback" == "$CLAUDE_LITELLM_CLAUDE_CONFIG"/* ]]; then
+          echo "claude-litellm: refusing overlay path inside the shared config dir: $fallback" >&2
+          return 1
+        fi
+        echo "claude-litellm: ignoring stale $var inside the shared config dir; using $fallback" >&2
+        typeset -g "$var=$fallback"
+        ;;
+    esac
+  done
+  ai_litellm_shared_env_links_ensure "$CLAUDE_LITELLM_HARNESS" "$CLAUDE_LITELLM_CLAUDE_CONFIG" || return $?
+  ai_litellm_claude_shared_settings_lint "$CLAUDE_LITELLM_HARNESS" || return $?
+  ai_litellm_render_claude_settings "$CLAUDE_LITELLM_HARNESS" "$CLAUDE_LITELLM_SETTINGS_ARG" "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY"
+}
+
 _claude_litellm_launch_proxy() {
   local requested="$1"
   shift
@@ -184,7 +218,7 @@ _claude_litellm_launch_proxy() {
 
   ai_litellm_model_runtime_ready "$target_model" || return $?
   ai_litellm_start >/dev/null || return $?
-  ai_litellm_ensure_claude_settings_file "$CLAUDE_LITELLM_SETTINGS_ARG" || return $?
+  _claude_litellm_launch_prepare || return $?
 
   local master_key
   master_key="$(ai_litellm_master_key)"
@@ -198,7 +232,7 @@ _claude_litellm_launch_proxy() {
   claude_command="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" command 2>/dev/null || printf 'claude')"
 
   local base_url_env auth_env discovery_env isolation_env tier_model_prefix tier_display_prefix
-  local auto_compact_window_env max_output_tokens_env empty_api_key_env
+  local auto_compact_window_env max_output_tokens_env empty_api_key_env attribution_env
   base_url_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.baseUrlEnv 2>/dev/null || printf 'ANTHROPIC_BASE_URL')"
   auth_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" provider.auth.env 2>/dev/null || printf 'ANTHROPIC_AUTH_TOKEN')"
   empty_api_key_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.emptyApiKeyEnv 2>/dev/null || printf 'ANTHROPIC_API_KEY')"
@@ -208,6 +242,7 @@ _claude_litellm_launch_proxy() {
   tier_display_prefix="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.tierDisplayNameEnvPrefix 2>/dev/null || printf 'ANTHROPIC_DEFAULT')"
   auto_compact_window_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.autoCompactWindowEnv 2>/dev/null || printf 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')"
   max_output_tokens_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.maxOutputTokensEnv 2>/dev/null || printf 'CLAUDE_CODE_MAX_OUTPUT_TOKENS')"
+  attribution_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.attributionHeaderEnv 2>/dev/null || printf 'CLAUDE_CODE_ATTRIBUTION_HEADER')"
 
   local -a env_assignments
   env_assignments=(
@@ -216,9 +251,10 @@ _claude_litellm_launch_proxy() {
     "$empty_api_key_env="
     "$discovery_env=1"
     "$isolation_env=$CLAUDE_LITELLM_CLAUDE_CONFIG"
+    "$attribution_env=0"
   )
 
-  local tier tier_upper tier_model tier_display
+  local tier tier_upper tier_model tier_display tier_caps
   local -a tiers
   tiers=("${(@f)$(_claude_litellm_tiers)}")
   for tier in "${tiers[@]}"; do
@@ -229,6 +265,11 @@ _claude_litellm_launch_proxy() {
       "${tier_model_prefix}_${tier_upper}_MODEL=$tier_model"
       "${tier_display_prefix}_${tier_upper}_MODEL_NAME=$tier_display"
     )
+    tier_caps="$(_claude_litellm_json "capabilities.$tier" 2>/dev/null || true)"
+    if [[ -n "$tier_caps" ]]; then
+      [[ "$tier_caps" == "none" ]] && tier_caps=""
+      env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL_SUPPORTED_CAPABILITIES=$tier_caps")
+    fi
   done
 
   # Claude Code exposes process-global knobs for compact threshold and request
@@ -249,7 +290,7 @@ _claude_litellm_launch_proxy() {
   [[ -n "$reasoning_output" ]] && claude_extra_args=("${(@f)reasoning_output}")
 
   ai_litellm_harness_exec_env "$CLAUDE_LITELLM_HARNESS" "${env_assignments[@]}" -- \
-    "$claude_command" --settings "$CLAUDE_LITELLM_SETTINGS_ARG" --model "$claude_model_arg" "${claude_extra_args[@]}" "$@"
+    "$claude_command" --settings "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY" --model "$claude_model_arg" "${claude_extra_args[@]}" "$@"
 }
 
 _claude_litellm_launch_direct() {
@@ -263,7 +304,7 @@ _claude_litellm_launch_direct() {
   }
   claude_model_arg="$(_claude_litellm_direct_model_arg_for_request "$requested")" || return $?
 
-  ai_litellm_ensure_claude_settings_file "$CLAUDE_LITELLM_SETTINGS_ARG" || return $?
+  _claude_litellm_launch_prepare || return $?
 
   local openrouter_key
   openrouter_key="$(ai_litellm_openrouter_key 2>/dev/null)" || {
@@ -275,7 +316,7 @@ _claude_litellm_launch_direct() {
   claude_command="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" command 2>/dev/null || printf 'claude')"
 
   local base_url_env auth_env empty_api_key_env discovery_env isolation_env tier_model_prefix tier_display_prefix
-  local subagent_model_env fast_mode_org_check_env
+  local subagent_model_env fast_mode_org_check_env attribution_env
   base_url_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.baseUrlEnv 2>/dev/null || printf 'ANTHROPIC_BASE_URL')"
   auth_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" provider.auth.env 2>/dev/null || printf 'ANTHROPIC_AUTH_TOKEN')"
   empty_api_key_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.emptyApiKeyEnv 2>/dev/null || printf 'ANTHROPIC_API_KEY')"
@@ -285,6 +326,7 @@ _claude_litellm_launch_direct() {
   tier_display_prefix="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.tierDisplayNameEnvPrefix 2>/dev/null || printf 'ANTHROPIC_DEFAULT')"
   subagent_model_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.subagentModelEnv 2>/dev/null || printf 'CLAUDE_CODE_SUBAGENT_MODEL')"
   fast_mode_org_check_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.fastModeOrgCheckEnv 2>/dev/null || printf 'CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK')"
+  attribution_env="$(ai_litellm_harness_json "$CLAUDE_LITELLM_HARNESS" adapterConfig.attributionHeaderEnv 2>/dev/null || printf 'CLAUDE_CODE_ATTRIBUTION_HEADER')"
 
   local -a env_assignments
   env_assignments=(
@@ -294,9 +336,10 @@ _claude_litellm_launch_direct() {
     "$discovery_env=0"
     "$isolation_env=$CLAUDE_LITELLM_CLAUDE_CONFIG"
     "$fast_mode_org_check_env=1"
+    "$attribution_env=0"
   )
 
-  local tier tier_upper tier_model tier_display
+  local tier tier_upper tier_model tier_display tier_caps
   local -a tiers
   tiers=("${(@f)$(_claude_litellm_tiers)}")
   for tier in "${tiers[@]}"; do
@@ -305,6 +348,11 @@ _claude_litellm_launch_direct() {
     tier_display="$(_claude_litellm_json "directDisplayNames.$tier" 2>/dev/null || printf '%s via OpenRouter' "$tier_upper")"
     [[ -n "$tier_model" ]] && env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL=$tier_model")
     [[ -n "$tier_display" ]] && env_assignments+=("${tier_display_prefix}_${tier_upper}_MODEL_NAME=$tier_display")
+    tier_caps="$(_claude_litellm_json "directCapabilities.$tier" 2>/dev/null || true)"
+    if [[ -n "$tier_caps" ]]; then
+      [[ "$tier_caps" == "none" ]] && tier_caps=""
+      env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL_SUPPORTED_CAPABILITIES=$tier_caps")
+    fi
   done
 
   local subagent_model

@@ -1,6 +1,6 @@
 # Claude Code / Codex Gateway Architecture
 
-Last updated: 2026-06-09
+Last updated: 2026-06-11
 
 ## 결론
 
@@ -21,6 +21,8 @@ provider/model registry에 대해서는 두 가지 source of truth만 둔다.
 - **모델별 토큰 한도(context window / max output)**: 같은 파일의 `x-limits:` YAML 앵커. underlying 모델당 앵커 1개, surface 엔트리는 `model_info: *alias`로 참조한다. 앵커 한 줄을 고치면 모든 harness 설정이 파생된다([토큰 한도 / Context Window 관리](#토큰-한도--context-window-관리) 참조).
 
 Claude direct 경로는 OpenRouter의 Anthropic-compatible API를 직접 본다. 런처는 `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN=<OpenRouter key>`, `ANTHROPIC_API_KEY=`를 subprocess에만 주입하고, `ANTHROPIC_DEFAULT_*_MODEL`을 `directAliases`에서 파생한다. 기본 direct tier는 `opus`다. 이 경로에서는 local LiteLLM proxy를 시작하지 않고 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`/`CLAUDE_CODE_AUTO_COMPACT_WINDOW`도 주입하지 않는다.
+
+Claude 두 모드 모두 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`을 주입하고, isolated config dir 안의 user-scope 환경 파일(settings/plugins/skills/CLAUDE.md)은 `~/.claude`로 symlink되어 native와 공유된다. 세션 상태(`projects/`, history, 자격증명)는 변형별로 격리를 유지한다 — 근거와 경계는 [2026-06-11 세션 경계/공유 환경 결정 로그](#2026-06-11-세션-경계공유-환경-결정-로그) 참조.
 
 Claude proxy fallback의 매 요청 출력 예약은 모델 능력치가 아니므로 `x-limits`에 넣지 않는다. Claude harness adapter 정책(`__FABRIC_HOME__/config/ai-litellm/harnesses/claude.json`의 `adapterConfig.outputReservation`)에서 별도로 관리하고, proxy 경로 런처가 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`와 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`를 여기서 파생한다.
 
@@ -629,6 +631,22 @@ ai-litellm key status
 - C3 gemma policy: 보류/소유 결정. oMLX runtime은 더 큰 context를 광고하지만 `sliding_window=1024` 품질 caveat가 있어 `8192/4096`을 `owned-policy` quality-conservative cap으로 유지한다. 상향은 별도 long-context 품질 probe 이후에만 한다.
 - C1 Claude opus 1M: 부분 관측. `x` 반복 210K-word prompt가 Claude→LiteLLM→DeepSeek 경로에서 성공했고 tail marker를 반환했다(`modelUsage.DeepSeek-V4-Pro.inputTokens=211580`, cost `$1.05905`). 따라서 200K name-derived hard clamp 가설은 반박됐다. 1M 전체 probe는 비용이 커서 실행하지 않았고, `--max-budget-usd`가 이 LiteLLM 경로에서 hard limit로 작동하지 않았으므로 추가 probe는 별도 승인/예산이 필요하다.
 - C7 Codex `apply_patch` tool type: 관측 후 현상 유지. 현재 generated catalog처럼 `apply_patch_tool_type`을 삭제하면 DeepSeek/Kimi/GLM 모두 provider 400 없이 응답하지만 Codex CLI exec toolset에 `apply_patch`가 노출되지 않는다. temp catalog에서 `function`은 현재 Codex schema가 거부한다(`unknown variant function, expected freeform`). temp catalog에서 `freeform`은 provider 400은 내지 않았지만 Kimi에서 Codex core가 incompatible payload/aborted로 실패했다. 따라서 blind `function` 전환은 금지하고, 현 삭제 로직을 유지한다.
+
+## 2026-06-11 세션 경계/공유 환경 결정 로그
+
+배경: native와 litellm Claude 세션을 완전 통합(단일 `CLAUDE_CONFIG_DIR`)하는 안을 실증 조사했다. 설치된 Claude Code 2.1.173 바이너리 + mock 백엔드 실험으로 확인된 사실: (1) 미인식 모델 ID는 일률 200K window로 간주되어 1M-window native 세션(>~190K)이 proxy/direct resume에서 "Prompt is too long"으로 즉사한다, (2) resume은 tool_use/tool_result 블록을 원본 그대로 재전송해 LiteLLM Anthropic→OpenAI 변환의 알려진 multi-turn 결함(BerriAI/litellm#28045, #26395)을 그대로 밟는다, (3) 죽은 백엔드로의 resume 시도는 user 턴 + `model:"<synthetic>"` 어시스턴트 턴을 트랜스크립트에 영구 기록한다, (4) settings.json `env` 블록은 시작 시 `Object.assign(process.env, ...)`로 wrapper가 주입한 process env를 덮어쓴다, (5) `--settings` overlay(flagSettings)는 user settings보다 우선하므로 per-mode 권한 하향이 유효하다, (6) `/model` 선택은 user settings `model` 키에 영구 저장된다, (7) `CLAUDE_CONFIG_DIR`가 설정되면 Keychain 자격증명 service 이름에 config dir hash suffix가 붙어 정체성이 분열된다.
+
+결정: **환경은 공유, 세션 상태는 격리.**
+
+- 공유 레이어: isolated config dir 안에서 `settings.json`, `settings.local.json`, `plugins`, `skills`, `keybindings.json`, `CLAUDE.md`를 `~/.claude`로 symlink한다(`isolation.sharedEnvironment`, `ai_litellm_shared_env_links_ensure`). dangling link는 의도된 동작이다 — native에 파일이 생기면 그때 공유된다.
+- 격리 유지: `projects/`(트랜스크립트+auto-memory+todos), `history.jsonl`, `.claude.json` 정체성, 자격증명. 위 (1)(2)(3)의 cross-backend resume 계열 버그와 약한 모델의 memory 오염을 구조적으로 차단한다. `CLAUDE_CONFIG_DIR`는 계속 fabric state를 가리키므로 (7)의 Keychain 분열도 발생하지 않는다.
+- settingsArg 분리: overlay가 config dir의 `settings.json`(이제 shared symlink)과 분리되어 `state/claude-litellm/overlay-settings.json`(direct), `overlay-settings-proxy.json`(proxy)로 이동했다. proxy overlay는 `generatedSettingsProxy`로 `permissions.defaultMode=default`를 주입한다 — (5)에 의해 native의 `bypassPermissions`가 non-Anthropic 모델 세션에 상속되는 것을 차단하는 검증된 메커니즘이다.
+- launch-time lint: `ai_litellm_claude_shared_settings_lint`가 공유 settings의 `env` 블록에서 backend routing 키(`ANTHROPIC_BASE_URL`/`AUTH_TOKEN`/`API_KEY`/`MODEL`/`DEFAULT_*`, `CLAUDE_CODE_SUBAGENT_MODEL`/discovery/compact/output/attribution/Bedrock·Vertex 스위치, `OPENROUTER_*`, `LITELLM_*`)를 발견하면 (4)의 환경 탈취를 막기 위해 hard fail한다. telemetry/OTel 등 무해한 `CLAUDE_CODE_*` 키는 차단하지 않는다. `/model`이 남긴 게이트웨이 모델 ID pin은 warning으로 알린다((6) 대응). `AI_LITELLM_SHARED_ENV_LINT=0`로 lint만 비활성화 가능. `AI_LITELLM_SHARED_ENV=0`은 link 유지보수만 멈출 뿐 이미 만들어진 symlink를 되돌리지 않는다 — 격리로 복귀하려면 symlink를 지우고 `*.isolated.bak`을 복원한다.
+- attribution header: direct/proxy 모두 `CLAUDE_CODE_ATTRIBUTION_HEADER=0`을 주입한다. per-request attribution block이 OpenRouter/LiteLLM 경유 prompt cache의 prefix를 매 턴 깨는 것을 막는다(Anthropic gateway 문서 권고).
+- tier capability 선언: `config/claude-litellm/settings.json`의 `capabilities.<tier>`(proxy) / `directCapabilities.<tier>`(direct)가 설정되면 `ANTHROPIC_DEFAULT_<TIER>_MODEL_SUPPORTED_CAPABILITIES`를 주입한다. 값 `none`은 빈 선언(thinking/effort 광고 차단)이다. 기본은 미설정 — 현 LiteLLM `drop_params:true` 동작을 바꾸지 않는다.
+- codex: 통합하지 않는다. CODEX_HOME은 monolithic이라 세션/메모리만 분리할 수 없고, memories sqlite에 provider 컬럼이 없어 약한 모델 메모리를 필터링할 수 없으며, 현 generator는 config.toml 전체 교체라 공유 시 native 설정을 파괴한다. 추후 공유가 필요하면 profile-v2(`codex -p <name>`, `$CODEX_HOME/<name>.config.toml` 레이어) 재작업이 전제이고, 그 경우에도 profile 파일에 `approval_policy`/`sandbox_mode`/`model_catalog_json`을 명시해야 한다(미명시 키는 native의 `approval=never`/`danger-full-access`를 상속함을 codex 0.138.0에서 실증).
+- goose: env-only 전환이라 경계 변경 없음. 단 `goose configure`가 provider 설정을 config.yaml에 영구 기록하는 것을 막기 위해 `adapterConfig.blockedSubcommands`로 차단한다.
+- opencode: `OPENCODE_CONFIG` per-invocation 주입이 이미 비파괴적이므로 현 경계를 유지한다.
 
 ## 장기 관리 원칙
 

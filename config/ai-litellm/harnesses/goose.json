@@ -80,6 +80,9 @@
       "mcp",
       "recipe",
       "help"
-    ]
+    ],
+    "blockedSubcommands": {
+      "configure": "goose-litellm injects provider settings per invocation; run 'goose configure' natively so litellm provider values are never persisted into goose config.yaml."
+    }
   }
 }

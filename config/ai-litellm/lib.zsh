@@ -38,7 +38,11 @@ const fs = require("fs");
 const file = process.argv[1];
 const path = process.argv[2].split(".");
 let value = JSON.parse(fs.readFileSync(file, "utf8"));
-for (const key of path) value = value == null ? undefined : value[key];
+for (const key of path) {
+  value = value != null && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key)
+    ? value[key]
+    : undefined;
+}
 if (value == null) process.exit(1);
 if (typeof value === "object") console.log(JSON.stringify(value));
 else console.log(String(value));
@@ -54,7 +58,11 @@ const fs = require("fs");
 const file = process.argv[1];
 const path = process.argv[2].split(".");
 let value = JSON.parse(fs.readFileSync(file, "utf8"));
-for (const key of path) value = value == null ? undefined : value[key];
+for (const key of path) {
+  value = value != null && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key)
+    ? value[key]
+    : undefined;
+}
 if (!Array.isArray(value)) process.exit(1);
 for (const item of value) console.log(String(item));
 ' "$file" "$json_path"
@@ -917,26 +925,131 @@ ai_litellm_ensure_claude_settings_file() {
   mv "$tmp" "$settings_path"
 }
 
-ai_litellm_render_claude_settings() {
-  local harness="${1:-claude}"
-  local settings_path defaults tmp
-  settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArg)" || return 1
+ai_litellm_render_settings_defaults() {
+  local settings_path="$1"
+  local defaults="$2"
   ai_litellm_ensure_claude_settings_file "$settings_path" || return $?
-
-  defaults="$(ai_litellm_harness_json "$harness" adapterConfig.generatedSettings 2>/dev/null || true)"
   [[ -n "$defaults" ]] || return 0
 
+  local tmp
   tmp="${settings_path}.$$"
+  # Recursive fill: missing keys (at any depth) get the default; existing
+  # values are never overwritten. Top-level-only merge would silently drop
+  # nested safety defaults (permissions.defaultMode) once a user adds any
+  # sibling key under the same object.
   jq --argjson defaults "$defaults" '
-    reduce ($defaults | keys_unsorted[]) as $key (.;
-      if has($key) then . else .[$key] = $defaults[$key] end
-    )
+    def fill($d):
+      if (type == "object") and ($d | type == "object") then
+        reduce ($d | keys_unsorted[]) as $key (.;
+          if has($key) then .[$key] = (.[$key] | fill($d[$key]))
+          else .[$key] = $d[$key] end
+        )
+      else . end;
+    fill($defaults)
   ' "$settings_path" >| "$tmp" || {
     rm -f "$tmp"
     return 1
   }
   chmod 600 "$tmp" 2>/dev/null || true
   mv "$tmp" "$settings_path"
+}
+
+ai_litellm_render_claude_settings() {
+  local harness="${1:-claude}"
+  local settings_path="${2:-}"
+  local proxy_settings_path="${3:-}"
+  local defaults proxy_extra proxy_defaults
+
+  [[ -n "$settings_path" ]] || settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArg)" || return 1
+  [[ -n "$proxy_settings_path" ]] || proxy_settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArgProxy 2>/dev/null || true)"
+
+  defaults="$(ai_litellm_harness_json "$harness" adapterConfig.generatedSettings 2>/dev/null || true)"
+  ai_litellm_render_settings_defaults "$settings_path" "$defaults" || return $?
+
+  [[ -n "$proxy_settings_path" ]] || return 0
+  proxy_extra="$(ai_litellm_harness_json "$harness" adapterConfig.generatedSettingsProxy 2>/dev/null || true)"
+  if [[ -n "$defaults" && -n "$proxy_extra" ]]; then
+    proxy_defaults="$(jq -cn --argjson base "$defaults" --argjson extra "$proxy_extra" '$base * $extra')" || return 1
+  else
+    proxy_defaults="${proxy_extra:-$defaults}"
+  fi
+  ai_litellm_render_settings_defaults "$proxy_settings_path" "$proxy_defaults"
+}
+
+# Shared-environment layer: link user-scope environment artifacts (settings,
+# plugins, skills, memory-free instruction files) from the harness's isolated
+# config dir to the native config root, so both variants read and accrue the
+# same environment while transcripts/auto-memory/history stay per-variant.
+# Dangling links are intentional: they light up if the native file appears
+# later, and they never create the native root themselves.
+ai_litellm_shared_env_links_ensure() {
+  local harness="$1"
+  local config_dir="$2"
+  [[ "${AI_LITELLM_SHARED_ENV:-1}" == "0" ]] && return 0
+  [[ -n "$config_dir" ]] || return 1
+
+  local target_root
+  target_root="$(ai_litellm_harness_json "$harness" isolation.sharedEnvironment.targetRoot 2>/dev/null || true)"
+  [[ -n "$target_root" ]] || return 0
+  # -ef alone misses the not-yet-existing case and would create self-loop
+  # symlinks inside the native root; compare textually as well.
+  if [[ "${config_dir%/}" == "${target_root%/}" || "$config_dir" -ef "$target_root" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$config_dir" || return 1
+
+  local item link target backup
+  for item in "${(@f)$(ai_litellm_harness_json_array "$harness" isolation.sharedEnvironment.items 2>/dev/null)}"; do
+    [[ -n "$item" && "$item" != /* && "$item" != *..* ]] || continue
+    link="$config_dir/$item"
+    target="$target_root/$item"
+    if [[ -L "$link" ]]; then
+      [[ "$(readlink -- "$link")" == "$target" ]] || ln -sfn -- "$target" "$link" || return 1
+      continue
+    fi
+    if [[ -e "$link" ]]; then
+      backup="$link.isolated.bak"
+      [[ -e "$backup" ]] && backup="$backup.$(date +%s).$RANDOM"
+      mv -- "$link" "$backup" || return 1
+      echo "claude-litellm: moved isolated $item to ${backup:t} (now shared from $target_root)" >&2
+    fi
+    ln -s -- "$target" "$link" || return 1
+  done
+}
+
+# Guard the shared settings surface: backend routing must only ever travel as
+# per-invocation process env or the per-mode --settings overlay. A routing or
+# model key in the shared user settings silently re-routes BOTH variants
+# (settings env is applied over process env at startup), so fail hard.
+ai_litellm_claude_shared_settings_lint() {
+  local harness="${1:-claude}"
+  local target_root="${2:-}"
+  [[ "${AI_LITELLM_SHARED_ENV_LINT:-1}" == "0" ]] && return 0
+
+  [[ -n "$target_root" ]] || target_root="$(ai_litellm_harness_json "$harness" isolation.sharedEnvironment.targetRoot 2>/dev/null || true)"
+  [[ -n "$target_root" ]] || return 0
+
+  local file bad model
+  for file in "$target_root/settings.json" "$target_root/settings.local.json"; do
+    [[ -f "$file" ]] || continue
+    jq empty "$file" 2>/dev/null || {
+      echo "claude-litellm: shared settings file is not valid JSON: $file" >&2
+      return 1
+    }
+    bad="$(jq -r '(.env // {}) | keys[] | select(test("^(ANTHROPIC_(BASE_URL|BEDROCK_BASE_URL|VERTEX_BASE_URL|AUTH_TOKEN|API_KEY|MODEL|SMALL_FAST_MODEL|CUSTOM_MODEL|DEFAULT_)|CLAUDE_CODE_(SUBAGENT_MODEL|ENABLE_GATEWAY_MODEL_DISCOVERY|AUTO_COMPACT_WINDOW|MAX_OUTPUT_TOKENS|ATTRIBUTION_HEADER|USE_BEDROCK|USE_VERTEX|SKIP_BEDROCK_AUTH|SKIP_VERTEX_AUTH|API_KEY_HELPER_TTL_MS)|OPENROUTER_|LITELLM_)"))' "$file" 2>/dev/null || true)"
+    if [[ -n "$bad" ]]; then
+      echo "claude-litellm: refusing to launch — shared $file env block carries backend routing keys that would override per-invocation routing for every variant:" >&2
+      print -r -- "$bad" | sed 's/^/  - /' >&2
+      echo "Move them into the per-mode overlay ($(ai_litellm_harness_json "$harness" paths.settingsArg 2>/dev/null || printf 'overlay-settings.json')) or set AI_LITELLM_SHARED_ENV_LINT=0 to override." >&2
+      return 1
+    fi
+    model="$(jq -r '.model // empty' "$file" 2>/dev/null || true)"
+    if [[ -n "$model" ]] && { [[ "$model" == "~"* || "$model" == */* ]] || ai_litellm_model_exists "$model" 2>/dev/null; }; then
+      echo "claude-litellm: warning — shared $file pins model '$model', which native claude will send verbatim to api.anthropic.com. Re-run /model in a native session to fix." >&2
+    fi
+  done
+  return 0
 }
 
 ai_litellm_cli_arg_present() {
@@ -1032,10 +1145,22 @@ ai_litellm_launch_env_injector() {
 
   local -a args env_assignments
   args=("$@")
+
   ai_litellm_harness_parse_model_selection "$harness" "${args[@]}" || return $?
   local model="$AI_LITELLM_SELECTED_MODEL"
   if (( AI_LITELLM_SELECTED_MODEL_CONSUMED )); then
     args=("${args[@]:1}")
+  fi
+
+  # Blocked-subcommand check runs after model consumption so both invocation
+  # forms are covered: `goose-litellm configure` and `goose-litellm <model> configure`.
+  if [[ -n "${args[1]:-}" ]]; then
+    local blocked_reason
+    blocked_reason="$(ai_litellm_harness_json "$harness" "adapterConfig.blockedSubcommands.${args[1]}" 2>/dev/null || true)"
+    if [[ -n "$blocked_reason" ]]; then
+      echo "$harness-litellm: subcommand '${args[1]}' is blocked: $blocked_reason" >&2
+      return 1
+    fi
   fi
 
   ai_litellm_model_runtime_ready "$model" || return $?
@@ -2617,6 +2742,10 @@ ai_litellm_sync() {
     echo "- claude settings"
     if (( ! dry_run )); then
       ai_litellm_render_claude_settings claude || failed=1
+    fi
+    echo "- claude shared environment links"
+    if (( ! dry_run )); then
+      ai_litellm_shared_env_links_ensure claude "$(ai_litellm_harness_json claude paths.configDir)" || failed=1
     fi
   fi
 

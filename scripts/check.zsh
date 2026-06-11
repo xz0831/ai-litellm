@@ -39,6 +39,7 @@ spaced_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home" "$spaced_home"' EXIT
 LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-$$" HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
 REAL_HOME="$real_home" HOME="$tmp_home" zsh -fc '
+set -e
 prefix="$HOME/.local/share/ai-litellm-fabric"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/lib.zsh"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/context-observations.json"
@@ -143,6 +144,25 @@ test -f "$claude_settings"
 jq empty "$claude_settings"
 test "$(jq -r ".enableWorkflows == true and .skipWorkflowUsageWarning == true" "$claude_settings")" = "true"
 test "$(stat -f %Lp "$claude_settings")" = "600"
+claude_settings_proxy="$(ai_litellm_harness_json claude paths.settingsArgProxy)"
+test -f "$claude_settings_proxy"
+jq empty "$claude_settings_proxy"
+test "$(jq -r ".enableWorkflows == true and .skipWorkflowUsageWarning == true" "$claude_settings_proxy")" = "true"
+test "$(jq -r ".permissions.defaultMode" "$claude_settings_proxy")" = "default"
+test "$(stat -f %Lp "$claude_settings_proxy")" = "600"
+lint_root="$HOME/lint-claude"
+mkdir -p "$lint_root"
+print -r -- "{\"env\":{\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:1\"}}" > "$lint_root/settings.json"
+! ai_litellm_claude_shared_settings_lint claude "$lint_root" 2>/dev/null
+print -r -- "{\"permissions\":{\"defaultMode\":\"bypassPermissions\"},\"env\":{\"BRAVE_SEARCH_API_KEY\":\"x\"}}" > "$lint_root/settings.json"
+ai_litellm_claude_shared_settings_lint claude "$lint_root" 2>/dev/null
+print -r -- "{\"model\":\"~anthropic/claude-opus-latest\"}" > "$lint_root/settings.json"
+lint_warning="$(ai_litellm_claude_shared_settings_lint claude "$lint_root" 2>&1)"
+[[ "$lint_warning" == *"warning"* ]]
+rm -rf "$lint_root"
+! ai_litellm_launch_env_injector goose configure >/dev/null 2>&1
+goose_blocked="$(ai_litellm_launch_env_injector goose configure 2>&1 || true)"
+[[ "$goose_blocked" == *"blocked"* ]]
 source "$prefix/config/claude-litellm/shell.zsh"
 test "$(_claude_litellm_default_mode)" = "direct"
 test "$(_claude_litellm_direct_default_request)" = "opus"
@@ -170,9 +190,11 @@ mkdir -p "$stub_dir"
   print -r -- "print -r -- \"api_key_set=\${+ANTHROPIC_API_KEY}\""
   print -r -- "print -r -- \"api_key_value=\$ANTHROPIC_API_KEY\""
   print -r -- "print -r -- \"discovery=\$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\""
+  print -r -- "print -r -- \"attribution=\$CLAUDE_CODE_ATTRIBUTION_HEADER\""
   print -r -- "print -r -- \"max_tokens_set=\${+CLAUDE_CODE_MAX_OUTPUT_TOKENS}\""
   print -r -- "print -r -- \"sonnet=\$ANTHROPIC_DEFAULT_SONNET_MODEL\""
   print -r -- "print -r -- \"subagent=\$CLAUDE_CODE_SUBAGENT_MODEL\""
+  print -r -- "print -r -- \"caps=\${+ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES}:\$ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES\""
   print -r -- "print -r -- \"args=\$*\""
 } > "$stub_dir/claude"
 chmod +x "$stub_dir/claude"
@@ -182,10 +204,59 @@ direct_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" cla
 [[ "$direct_output" == *"api_key_set=1"* ]]
 [[ "$direct_output" == *"api_key_value="* ]]
 [[ "$direct_output" == *"discovery=0"* ]]
+[[ "$direct_output" == *"attribution=0"* ]]
 [[ "$direct_output" == *"max_tokens_set=0"* ]]
 [[ "$direct_output" == *"sonnet=~anthropic/claude-sonnet-latest"* ]]
 [[ "$direct_output" == *"subagent=~anthropic/claude-opus-latest"* ]]
+[[ "$direct_output" == *"caps=0:"* ]]
 [[ "$direct_output" == *"--model sonnet"* ]]
+[[ "$direct_output" == *"--settings $prefix/state/claude-litellm/overlay-settings.json"* ]]
+test -L "$prefix/state/claude-litellm/claude-config/settings.json"
+test "$(readlink "$prefix/state/claude-litellm/claude-config/settings.json")" = "$HOME/.claude/settings.json"
+test -L "$prefix/state/claude-litellm/claude-config/CLAUDE.md"
+test -L "$prefix/state/claude-litellm/claude-config/plugins"
+test ! -e "$HOME/.claude"
+direct_output_repeat="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" claude-litellm sonnet -p noop)"
+[[ "$direct_output_repeat" == *"attribution=0"* ]]
+if find "$prefix/state/claude-litellm/claude-config" -name "*.isolated.bak*" | grep -q .; then
+  echo "Unexpected shared-environment backups after repeated launch" >&2
+  exit 1
+fi
+(
+  mig_config="$HOME/mig-config"
+  mkdir -p "$mig_config"
+  print -r -- "{\"old\":true}" > "$mig_config/settings.json"
+  mig_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_CLAUDE_CONFIG="$mig_config" claude-litellm sonnet -p noop 2>&1)"
+  [[ "$mig_output" == *"moved isolated settings.json"* ]]
+  test -L "$mig_config/settings.json"
+  test "$(readlink "$mig_config/settings.json")" = "$HOME/.claude/settings.json"
+  test "$(jq -r ".old" "$mig_config/settings.json.isolated.bak")" = "true"
+)
+(
+  stale_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_SETTINGS_ARG="$prefix/state/claude-litellm/claude-config/settings.json" claude-litellm sonnet -p noop 2>&1)"
+  [[ "$stale_output" == *"ignoring stale CLAUDE_LITELLM_SETTINGS_ARG"* ]]
+  [[ "$stale_output" == *"--settings $prefix/state/claude-litellm/overlay-settings.json"* ]]
+  test -L "$prefix/state/claude-litellm/claude-config/settings.json"
+)
+caps_settings="$prefix/config/claude-litellm/settings.json"
+jq ".capabilities = {\"sonnet\": \"none\"}" "$caps_settings" > "$caps_settings.tmp"
+mv "$caps_settings.tmp" "$caps_settings"
+(
+  ai_litellm_model_runtime_ready() { return 0; }
+  ai_litellm_start() { return 0; }
+  ai_litellm_master_key() { print -r -- "sk-test-master"; }
+  proxy_output="$(PATH="$stub_dir:$PATH" claude-litellm --proxy sonnet -p noop 2>/dev/null)"
+  [[ "$proxy_output" == *"--settings $prefix/state/claude-litellm/overlay-settings-proxy.json"* ]]
+  [[ "$proxy_output" == *"discovery=1"* ]]
+  [[ "$proxy_output" == *"attribution=0"* ]]
+  [[ "$proxy_output" == *"max_tokens_set=1"* ]]
+  [[ "$proxy_output" == *"sonnet=Kimi-K2.6"* ]]
+  [[ "$proxy_output" == *"caps=1:"* ]]
+  [[ "$proxy_output" == *"--model sonnet"* ]]
+)
+! ai_litellm_launch_env_injector goose DeepSeek-V4-Pro configure >/dev/null 2>&1
+goose_model_blocked="$(ai_litellm_launch_env_injector goose DeepSeek-V4-Pro configure 2>&1 || true)"
+[[ "$goose_model_blocked" == *"blocked"* ]]
 "$HOME/.local/bin/claude-litellm" --status >/dev/null
 source "$prefix/config/codex-litellm/shell.zsh"
 test "$(_codex_litellm_resolve_model openrouter/deepseek/deepseek-v4-pro)" = "gpt-5.5"
@@ -212,7 +283,7 @@ foreign_pid=$!
 mkdir -p "$HOME/.config/ai-litellm"
 print -r -- "$foreign_pid" > "$HOME/.config/ai-litellm/litellm.pid"
 ! ai_litellm_pid_running
-ai_litellm_stop >/dev/null 2>&1
+ai_litellm_stop >/dev/null 2>&1 || true
 kill -0 "$foreign_pid"
 kill "$foreign_pid"
 rmdir "$HOME/.config/ai-litellm" "$HOME/.config" 2>/dev/null || true

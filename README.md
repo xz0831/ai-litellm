@@ -10,10 +10,25 @@ This repository manages the wrapper layer around local agent CLIs:
 - `goose-litellm`: goose through the shared LiteLLM proxy
 - `opencode-litellm`: OpenCode through the shared LiteLLM proxy
 
-It intentionally does not manage native Claude Code or native Codex state:
+It shares the user-scope environment with native harnesses while keeping
+session state isolated per variant:
 
-- no writes to `~/.claude`
-- no writes to `~/.codex`
+- shared by reference (symlinks from the fabric Claude config dir into
+  `~/.claude`): `settings.json`, `settings.local.json`, `plugins`, `skills`,
+  `keybindings.json`, `CLAUDE.md`
+- isolated per variant: transcripts (`projects/`), auto-memory, prompt
+  history, todos, credentials, `.claude.json` identity — cross-backend
+  `--resume`/`--continue` and memory pollution stay structurally impossible
+- backend routing travels only as per-invocation process env plus a per-mode
+  `--settings` overlay; launch refuses to start if the shared settings env
+  block carries backend-routing keys (`ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_AUTH_TOKEN`/`API_KEY`, model/tier pin envs, `OPENROUTER_*`,
+  `LITELLM_*`) — benign keys like telemetry/OTel settings are not blocked
+- the fabric itself still never writes into `~/.claude`; writes through the
+  shared links are performed by Claude Code itself (permission decisions,
+  plugin state) exactly as a native session would
+- no writes to `~/.codex` (codex keeps a fully isolated `CODEX_HOME`;
+  see the session-boundary decision log in the architecture guide)
 - no replacement of `claude`, `codex`, `goose`, or `opencode`
 - no API keys in git
 
@@ -101,7 +116,9 @@ layer, and creates a local LiteLLM master key if one is not already available:
 - `~/.local/bin/litellm-master-key-status`
 
 It creates isolated runtime directories but leaves native app directories alone.
-It does not write `~/.claude`, `~/.codex`, or `~/litellm_config.yaml`.
+It does not write `~/.claude`, `~/.codex`, or `~/litellm_config.yaml`; the
+Claude shared-environment symlinks are created inside the fabric state dir and
+only point at `~/.claude`.
 
 Uninstall the package/shims:
 
@@ -171,8 +188,10 @@ regenerate without bouncing the proxy.
 
 Supported harnesses are optional on each machine. `sync`, `doctor`, and
 metadata commands must skip missing native CLIs cleanly; only launching that
-specific harness requires its native command. `sync` also ensures the isolated
-Claude Code settings file exists without touching `~/.claude`.
+specific harness requires its native command. `sync` also renders the per-mode
+Claude `--settings` overlays (`overlay-settings.json` and
+`overlay-settings-proxy.json`, which downgrades `permissions.defaultMode` for
+non-Anthropic proxy models) and maintains the shared-environment symlinks.
 
 OpenRouter backend names can be used directly where a model is accepted. The
 wrapper resolves them back to the configured `model_name` without duplicating
