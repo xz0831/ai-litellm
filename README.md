@@ -5,7 +5,7 @@ Portable harness fabric for local AI agent CLIs.
 This repository manages the wrapper layer around local agent CLIs:
 
 - `ai-litellm`: shared proxy lifecycle, routing, context/reasoning doctors
-- `claude-litellm`: Claude Code through OpenRouter's Anthropic-compatible API by default, with a LiteLLM proxy fallback
+- `claude-litellm`: Claude Code on non-Anthropic models — LiteLLM proxy by default (OpenRouter + local oMLX routes), with an OpenRouter Anthropic-compatible direct mode (`--direct`)
 - `codex-litellm`: Codex CLI through the shared LiteLLM proxy
 - `goose-litellm`: goose through the shared LiteLLM proxy
 - `opencode-litellm`: OpenCode through the shared LiteLLM proxy
@@ -54,6 +54,8 @@ Tracked source:
 - `config/claude-litellm/*`: Claude direct/proxy adapter settings/helper
 - `config/codex-litellm/*`: Codex LiteLLM adapter settings/helper
 - `docs/AI_AGENT_LITELLM_ARCHITECTURE.md`: maintainer architecture guide
+- `docs/DESIGN_RATIONALE.md`: why every non-obvious decision is the way it is
+  (rationale, rejected alternatives, standing counter-arguments, honest unknowns)
 - `scripts/install.zsh`: installer for another Mac
 - `scripts/uninstall.zsh`: package/shim remover
 
@@ -190,8 +192,9 @@ Supported harnesses are optional on each machine. `sync`, `doctor`, and
 metadata commands must skip missing native CLIs cleanly; only launching that
 specific harness requires its native command. `sync` also renders the per-mode
 Claude `--settings` overlays (`overlay-settings.json` and
-`overlay-settings-proxy.json`, which downgrades `permissions.defaultMode` for
-non-Anthropic proxy models) and maintains the shared-environment symlinks.
+`overlay-settings-proxy.json`; both downgrade `permissions.defaultMode` so a
+native `bypassPermissions` never reaches non-Anthropic models on either lane)
+and maintains the shared-environment symlinks.
 
 OpenRouter backend names can be used directly where a model is accepted. The
 wrapper resolves them back to the configured `model_name` without duplicating
@@ -207,25 +210,27 @@ For Codex, a raw provider slug is resolved to a Codex-safe facade such as
 slug can be used in place of the model argument in the harness smoke tests
 below.
 
-Then test one harness. Claude Code defaults to the thin OpenRouter direct path
-documented by OpenRouter for Claude Code: `ANTHROPIC_BASE_URL` is
-`https://openrouter.ai/api`, the OpenRouter key is injected as
-`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` is explicitly blanked to avoid
-auth conflicts. The default direct tier is `opus`.
+Then test one harness. Claude Code defaults to the LiteLLM proxy path:
+tier aliases map to the curated non-Anthropic routes (the haiku tier is a
+fully local oMLX model, so the haiku smoke test below is free), and the
+proxy is auto-started on demand.
 
 ```zsh
-claude-litellm sonnet -p 'Reply with exactly OK' --no-session-persistence --tools ''
+claude-litellm haiku -p 'Reply with exactly OK' --no-session-persistence --tools ''
 codex-litellm exec --skip-git-repo-check --sandbox read-only 'Reply with exactly OK'
 ```
 
-Those harness smoke tests make real provider requests and may be billable.
+Harness smoke tests against OpenRouter-backed tiers make real provider
+requests and may be billable.
 
-Use the LiteLLM proxy path explicitly when you want the curated non-Claude
-OpenRouter routes or local runtime routes from the registry:
+Use `--direct` for the thin OpenRouter Anthropic-compatible path (no local
+proxy; OpenRouter's own model-id vocabulary; `ANTHROPIC_API_KEY` is blanked
+and the OpenRouter key travels as `ANTHROPIC_AUTH_TOKEN`). Local models
+cannot ride this lane — there is no LiteLLM in the path:
 
 ```zsh
-claude-litellm --proxy haiku -p 'Reply with exactly OK' --no-session-persistence --tools ''
-claude-litellm --proxy local-omlx-gemma4-12b -p 'Reply with exactly LOCAL_OK' --no-session-persistence --tools ''
+claude-litellm --direct sonnet -p 'Reply with exactly OK' --no-session-persistence --tools ''
+claude-litellm Gemma4-12B-omlx -p 'Reply with exactly LOCAL_OK' --no-session-persistence --tools ''
 ```
 
 ## Local Models
@@ -233,19 +238,22 @@ claude-litellm --proxy local-omlx-gemma4-12b -p 'Reply with exactly LOCAL_OK' --
 The repository tracks local runtime wiring, not model weights. OpenRouter routes
 are curated recommendations, but local oMLX models are machine-specific.
 
-`local-omlx-gemma4-12b` remains a sample/recommended route. When oMLX is running,
+`Gemma4-12B-omlx` remains a sample/recommended route. When oMLX is running,
 `ai-litellm sync` also reads `http://127.0.0.1:8000/v1/models` and generates
 routes for the models this computer actually serves, such as:
 
 ```zsh
 ai-litellm runtime status omlx
 ai-litellm sync
-ai-litellm model list | grep '^  local-omlx-'
+ai-litellm model list | grep -- '-omlx'
 ```
 
-Generated local routes use the `local-omlx-...` prefix and point at the exact
-runtime model id advertised by oMLX. The actual oMLX installation and files
-under `~/.omlx/models` remain machine-local.
+Generated local routes are named `<ModelId>-<runtime>` (suffix auto-derived
+from the runtime name, lowercase — e.g. `Qwen3.6-27B-4bit-omlx`; an `ollama`
+runtime would yield `-ollama`) and point at the exact runtime model id
+advertised by oMLX. A discovered model is skipped when a registry entry
+already serves the same backend. The actual oMLX installation and files under
+`~/.omlx/models` remain machine-local.
 
 ## Token Budget Policy
 
@@ -283,6 +291,10 @@ To re-check gateway-side output clamping against the installed LiteLLM version:
 ```zsh
 ./scripts/verify_litellm_token_clamp.py
 ```
+
+Run this after every LiteLLM upgrade: the clamp findings are
+version-specific, and the doctor only checks configuration presence, not
+behavior.
 
 Current local result with LiteLLM 1.81.14: plain config does not override a
 larger client `max_tokens`; `litellm_settings.modify_params: true` clamps

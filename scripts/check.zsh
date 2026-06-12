@@ -56,18 +56,22 @@ source "$prefix/config/ai-litellm/lib.zsh"
 grep -q "^LITELLM_MASTER_KEY=" "$prefix/state/ai-litellm/env"
 test "$(stat -f %Lp "$prefix/state/ai-litellm/env")" = "600"
 test -n "$(ai_litellm_master_key)"
-test "$(ai_litellm_model_resolve openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
-test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
+test "$(ai_litellm_model_resolve openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
+test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
 test "$(ai_litellm_model_backend openrouter/deepseek/deepseek-v4-pro)" = "openrouter/deepseek/deepseek-v4-pro"
 ai_litellm_model_limits openrouter/moonshotai/kimi-k2.6 >/dev/null
 test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-v4-pro)" = "none minimal low medium high xhigh"
-runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown local-omlx-gemma4-12b)"
-[[ "$runtime_routes_dry" == *"local-omlx-markitdown -> openai/MarkItDown"* ]]
-[[ "$runtime_routes_dry" != *"local-omlx-local-omlx-gemma4-12b"* ]]
+runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown gemma4-12b)"
+[[ "$runtime_routes_dry" == *"MarkItDown-omlx -> openai/MarkItDown"* ]]
+[[ "$runtime_routes_dry" != *"gemma4-12b"* ]]
+ai_litellm_runtime_routes_write omlx 0 "Qwen3.6-Test-27B" "PlainLocal" >/dev/null
+grep -A8 "model_name: Qwen3.6-Test-27B-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_input_tokens: 131072"
+grep -A8 "model_name: Qwen3.6-Test-27B-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_output_tokens: 16384"
+grep -A8 "model_name: PlainLocal-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_input_tokens: 8192"
 for harness in "${(@f)$(ai_litellm_harness_names)}"; do
   ai_litellm_harness_validate "$harness"
 done
-ai_litellm_model_limits GLM-5.1 >/dev/null
+ai_litellm_model_limits GLM-5.1-openrouter >/dev/null
 ai_litellm_context_gateway_clamp_policy_ok
 ai_litellm_context_gateway_clamp_configured
 ai_litellm_context_gateway_cost_guardrail_policy_ok
@@ -123,7 +127,7 @@ ai_litellm_context_observations DeepSeek >/dev/null
 matrix_opus="$(ai_litellm_context_matrix claude-litellm)"
 print -r -- "$matrix_opus" | grep -q ">=211580"
 test "$(ai_litellm_harness_json codex models.default)" = "gpt-5.5"
-budget="$(ai_litellm_harness_output_budget claude sonnet Kimi-K2.6)"
+budget="$(ai_litellm_harness_output_budget claude sonnet Kimi-K2.6-openrouter)"
 test "$(print -r -- "$budget" | jq -r ".effectiveInput > 0 and .reservation < .capability")" = "true"
 codex_budget="$(ai_litellm_harness_output_budget codex gpt-5.4 gpt-5.4)"
 test "$(print -r -- "$codex_budget" | jq -r ".effectiveInput")" = "221950"
@@ -131,7 +135,7 @@ codex_catalog_map="$(ai_litellm_codex_catalog_context_map codex)"
 test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.4\"")" = "221950"
 test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.4-mini\"")" = "221950"
 test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.5\"")" = "1008384"
-test "$(print -r -- "$codex_catalog_map" | jq -r ".\"local-omlx-gemma4-12b\"")" = "8192"
+test "$(print -r -- "$codex_catalog_map" | jq -r ".\"Gemma4-12B-omlx\"")" = "8192"
 codex_catalog="$(ai_litellm_harness_json codex paths.modelCatalog)"
 mkdir -p "${codex_catalog:h}"
 print -r -- "{\"models\":[{\"slug\":\"gpt-5.4\",\"context_window\":262144}]}" > "$codex_catalog"
@@ -143,6 +147,7 @@ claude_settings="$(ai_litellm_harness_json claude paths.settingsArg)"
 test -f "$claude_settings"
 jq empty "$claude_settings"
 test "$(jq -r ".enableWorkflows == true and .skipWorkflowUsageWarning == true" "$claude_settings")" = "true"
+test "$(jq -r ".permissions.defaultMode" "$claude_settings")" = "default"
 test "$(stat -f %Lp "$claude_settings")" = "600"
 claude_settings_proxy="$(ai_litellm_harness_json claude paths.settingsArgProxy)"
 test -f "$claude_settings_proxy"
@@ -164,19 +169,22 @@ rm -rf "$lint_root"
 goose_blocked="$(ai_litellm_launch_env_injector goose configure 2>&1 || true)"
 [[ "$goose_blocked" == *"blocked"* ]]
 source "$prefix/config/claude-litellm/shell.zsh"
-test "$(_claude_litellm_default_mode)" = "direct"
+test "$(_claude_litellm_default_mode)" = "proxy"
 test "$(_claude_litellm_direct_default_request)" = "opus"
 test "$(_claude_litellm_proxy_default_request)" = "opus"
-test "$(_claude_litellm_direct_model_for_request "")" = "~anthropic/claude-opus-latest"
-test "$(_claude_litellm_direct_model_for_request opus)" = "~anthropic/claude-opus-latest"
+test "$(_claude_litellm_direct_model_for_request "")" = "deepseek/deepseek-v4-pro"
+test "$(_claude_litellm_direct_model_for_request opus)" = "deepseek/deepseek-v4-pro"
 test "$(_claude_litellm_direct_model_arg_for_request opus)" = "opus"
-test "$(_claude_litellm_target_model_for_request "")" = "DeepSeek-V4-Pro"
-test "$(_claude_litellm_target_model_for_request openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
-test "$(_claude_litellm_resolve_model_arg openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro"
+test "$(_claude_litellm_direct_model_arg_for_request openrouter/deepseek/deepseek-v4-pro)" = "deepseek/deepseek-v4-pro"
+test "$(_claude_litellm_direct_wire_model openrouter/moonshotai/kimi-k2.6)" = "moonshotai/kimi-k2.6"
+test "$(_claude_litellm_target_model_for_request "")" = "DeepSeek-V4-Pro-openrouter"
+test "$(_claude_litellm_target_model_for_request openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
+test "$(_claude_litellm_resolve_model_arg openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
 (
   _claude_litellm_launch_proxy() { print -r -- "proxy:$1"; }
   _claude_litellm_launch_direct() { print -r -- "direct:$1"; }
-  test "$(claude-litellm sonnet)" = "direct:sonnet"
+  test "$(claude-litellm sonnet)" = "proxy:sonnet"
+  test "$(claude-litellm --direct sonnet)" = "direct:sonnet"
   test "$(claude-litellm --proxy sonnet)" = "proxy:sonnet"
   test "$(claude-litellm openrouter/deepseek/deepseek-v4-pro)" = "proxy:openrouter/deepseek/deepseek-v4-pro"
   test "$(claude-litellm --direct openrouter/deepseek/deepseek-v4-pro)" = "direct:openrouter/deepseek/deepseek-v4-pro"
@@ -193,12 +201,15 @@ mkdir -p "$stub_dir"
   print -r -- "print -r -- \"attribution=\$CLAUDE_CODE_ATTRIBUTION_HEADER\""
   print -r -- "print -r -- \"max_tokens_set=\${+CLAUDE_CODE_MAX_OUTPUT_TOKENS}\""
   print -r -- "print -r -- \"sonnet=\$ANTHROPIC_DEFAULT_SONNET_MODEL\""
+  print -r -- "print -r -- \"sonnet_name=\$ANTHROPIC_DEFAULT_SONNET_MODEL_NAME\""
+  print -r -- "print -r -- \"haiku=\$ANTHROPIC_DEFAULT_HAIKU_MODEL\""
+  print -r -- "print -r -- \"haiku_name=\$ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME\""
   print -r -- "print -r -- \"subagent=\$CLAUDE_CODE_SUBAGENT_MODEL\""
   print -r -- "print -r -- \"caps=\${+ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES}:\$ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES\""
   print -r -- "print -r -- \"args=\$*\""
 } > "$stub_dir/claude"
 chmod +x "$stub_dir/claude"
-direct_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" claude-litellm sonnet -p noop)"
+direct_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" claude-litellm --direct sonnet -p noop)"
 [[ "$direct_output" == *"base=https://openrouter.ai/api"* ]]
 [[ "$direct_output" == *"auth=set"* ]]
 [[ "$direct_output" == *"api_key_set=1"* ]]
@@ -206,8 +217,11 @@ direct_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" cla
 [[ "$direct_output" == *"discovery=0"* ]]
 [[ "$direct_output" == *"attribution=0"* ]]
 [[ "$direct_output" == *"max_tokens_set=0"* ]]
-[[ "$direct_output" == *"sonnet=~anthropic/claude-sonnet-latest"* ]]
-[[ "$direct_output" == *"subagent=~anthropic/claude-opus-latest"* ]]
+[[ "$direct_output" == *"sonnet=moonshotai/kimi-k2.6"* ]]
+[[ "$direct_output" == *"sonnet_name=Kimi-K2.6 (openrouter)"* ]]
+[[ "$direct_output" == *"haiku=z-ai/glm-5.1"* ]]
+[[ "$direct_output" == *"haiku_name=GLM-5.1 (openrouter)"* ]]
+[[ "$direct_output" == *"subagent=deepseek/deepseek-v4-pro"* ]]
 [[ "$direct_output" == *"caps=0:"* ]]
 [[ "$direct_output" == *"--model sonnet"* ]]
 [[ "$direct_output" == *"--settings $prefix/state/claude-litellm/overlay-settings.json"* ]]
@@ -216,7 +230,7 @@ test "$(readlink "$prefix/state/claude-litellm/claude-config/settings.json")" = 
 test -L "$prefix/state/claude-litellm/claude-config/CLAUDE.md"
 test -L "$prefix/state/claude-litellm/claude-config/plugins"
 test ! -e "$HOME/.claude"
-direct_output_repeat="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" claude-litellm sonnet -p noop)"
+direct_output_repeat="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" claude-litellm --direct sonnet -p noop)"
 [[ "$direct_output_repeat" == *"attribution=0"* ]]
 if find "$prefix/state/claude-litellm/claude-config" -name "*.isolated.bak*" | grep -q .; then
   echo "Unexpected shared-environment backups after repeated launch" >&2
@@ -226,14 +240,14 @@ fi
   mig_config="$HOME/mig-config"
   mkdir -p "$mig_config"
   print -r -- "{\"old\":true}" > "$mig_config/settings.json"
-  mig_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_CLAUDE_CONFIG="$mig_config" claude-litellm sonnet -p noop 2>&1)"
+  mig_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_CLAUDE_CONFIG="$mig_config" claude-litellm --direct sonnet -p noop 2>&1)"
   [[ "$mig_output" == *"moved isolated settings.json"* ]]
   test -L "$mig_config/settings.json"
   test "$(readlink "$mig_config/settings.json")" = "$HOME/.claude/settings.json"
   test "$(jq -r ".old" "$mig_config/settings.json.isolated.bak")" = "true"
 )
 (
-  stale_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_SETTINGS_ARG="$prefix/state/claude-litellm/claude-config/settings.json" claude-litellm sonnet -p noop 2>&1)"
+  stale_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" CLAUDE_LITELLM_SETTINGS_ARG="$prefix/state/claude-litellm/claude-config/settings.json" claude-litellm --direct sonnet -p noop 2>&1)"
   [[ "$stale_output" == *"ignoring stale CLAUDE_LITELLM_SETTINGS_ARG"* ]]
   [[ "$stale_output" == *"--settings $prefix/state/claude-litellm/overlay-settings.json"* ]]
   test -L "$prefix/state/claude-litellm/claude-config/settings.json"
@@ -250,19 +264,26 @@ mv "$caps_settings.tmp" "$caps_settings"
   [[ "$proxy_output" == *"discovery=1"* ]]
   [[ "$proxy_output" == *"attribution=0"* ]]
   [[ "$proxy_output" == *"max_tokens_set=1"* ]]
-  [[ "$proxy_output" == *"sonnet=Kimi-K2.6"* ]]
+  [[ "$proxy_output" == *"sonnet=Kimi-K2.6-openrouter"* ]]
+  [[ "$proxy_output" == *"sonnet_name=Kimi-K2.6 (openrouter)"* ]]
+  [[ "$proxy_output" == *"haiku=Qwen3.6-27B-omlx"* ]]
+  [[ "$proxy_output" == *"haiku_name=Qwen3.6-27B (omlx)"* ]]
   [[ "$proxy_output" == *"caps=1:"* ]]
   [[ "$proxy_output" == *"--model sonnet"* ]]
 )
-! ai_litellm_launch_env_injector goose DeepSeek-V4-Pro configure >/dev/null 2>&1
-goose_model_blocked="$(ai_litellm_launch_env_injector goose DeepSeek-V4-Pro configure 2>&1 || true)"
+ai_litellm_model_limits Qwen3.6-27B-omlx >/dev/null
+runtime_routes_dedup="$(ai_litellm_runtime_routes_write omlx 1 Qwen3.6-27B-4bit)"
+[[ -z "$runtime_routes_dedup" ]]  # dedup must yield NO route for an upstream a registry entry already serves
+! ai_litellm_launch_env_injector goose DeepSeek-V4-Pro-openrouter configure >/dev/null 2>&1
+goose_model_blocked="$(ai_litellm_launch_env_injector goose DeepSeek-V4-Pro-openrouter configure 2>&1 || true)"
 [[ "$goose_model_blocked" == *"blocked"* ]]
 "$HOME/.local/bin/claude-litellm" --status >/dev/null
 source "$prefix/config/codex-litellm/shell.zsh"
 test "$(_codex_litellm_resolve_model openrouter/deepseek/deepseek-v4-pro)" = "gpt-5.5"
-test "$(_codex_litellm_resolve_model DeepSeek-V4-Pro)" = "gpt-5.5"
+test "$(_codex_litellm_resolve_model DeepSeek-V4-Pro-openrouter)" = "gpt-5.5"
 test "$(_codex_litellm_resolve_model openrouter/moonshotai/kimi-k2.6)" = "gpt-5.4"
-test "$(_codex_litellm_resolve_model openai/local-omlx-gemma4-12b)" = "local-omlx-gemma4-12b"
+test "$(_codex_litellm_resolve_model openai/gemma4-12b)" = "Gemma4-12B-omlx"
+test "$(_codex_litellm_resolve_model Gemma4-12B-omlx)" = "Gemma4-12B-omlx"
 ai_litellm_render_opencode_config opencode
 test "$(stat -f %Lp "$prefix/state")" = "700"
 test "$(stat -f %Lp "$prefix/state/ai-litellm")" = "700"

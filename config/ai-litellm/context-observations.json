@@ -11,7 +11,7 @@
         "opus",
         "default(opus)"
       ],
-      "model_name": "DeepSeek-V4-Pro",
+      "model_name": "DeepSeek-V4-Pro-openrouter",
       "provider_model": "openrouter/deepseek/deepseek-v4-pro",
       "status": "lower_bound",
       "observed_input_tokens": 211580,
@@ -23,7 +23,7 @@
       "id": "2026-06-08-glm51-204800-lower-bound",
       "timestamp": "2026-06-08T00:00:00Z",
       "scope": "backend",
-      "model_name": "GLM-5.1",
+      "model_name": "GLM-5.1-openrouter",
       "provider_model": "openrouter/z-ai/glm-5.1",
       "status": "lower_bound",
       "observed_input_tokens": 204800,

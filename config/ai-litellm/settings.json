@@ -12,14 +12,13 @@
       "baseUrl": "http://127.0.0.1:8000",
       "apiBase": "http://127.0.0.1:8000/v1",
       "modelsDir": "__HOME__/.omlx/models",
-      "modelPrefix": "local-omlx-",
       "startCommand": "omlx start",
       "startCommandBinary": "omlx",
       "stopCommand": "omlx stop",
       "discoverModels": true,
       "expectedModels": [],
       "recommendedModels": [
-        "local-omlx-gemma4-12b"
+        "Gemma4-12B-omlx"
       ],
       "defaultModelInfo": {
         "max_input_tokens": 8192,
@@ -31,6 +30,14 @@
         "x_output_source": "quality-conservative-local-policy",
         "x_reasoning_confidence": "owned-policy",
         "x_reasoning_source": "local-runtime-no-reasoning-routing"
+      },
+      "modelInfoOverrides": {
+        "Qwen3*": {
+          "max_input_tokens": 131072,
+          "max_output_tokens": 16384,
+          "x_input_source": "native 262144 (model config.json); owned-policy local throughput cap",
+          "x_output_source": "owned-policy local output cap"
+        }
       },
       "managedBy": "user"
     }

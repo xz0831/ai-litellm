@@ -80,9 +80,7 @@
     "fastModeOrgCheckEnv": "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",
     "generatedSettings": {
       "enableWorkflows": true,
-      "skipWorkflowUsageWarning": true
-    },
-    "generatedSettingsProxy": {
+      "skipWorkflowUsageWarning": true,
       "permissions": {
         "defaultMode": "default"
       }

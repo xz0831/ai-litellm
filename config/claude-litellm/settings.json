@@ -1,27 +1,27 @@
 {
-  "mode": "direct",
+  "mode": "proxy",
   "default": "opus",
   "directDefault": "opus",
   "proxyDefault": "opus",
   "directAliases": {
-    "opus": "~anthropic/claude-opus-latest",
-    "sonnet": "~anthropic/claude-sonnet-latest",
-    "haiku": "~anthropic/claude-haiku-latest"
+    "opus": "deepseek/deepseek-v4-pro",
+    "sonnet": "moonshotai/kimi-k2.6",
+    "haiku": "z-ai/glm-5.1"
   },
   "directDisplayNames": {
-    "opus": "Claude Opus via OpenRouter",
-    "sonnet": "Claude Sonnet via OpenRouter",
-    "haiku": "Claude Haiku via OpenRouter"
+    "opus": "DeepSeek-V4-Pro (openrouter)",
+    "sonnet": "Kimi-K2.6 (openrouter)",
+    "haiku": "GLM-5.1 (openrouter)"
   },
-  "subagentModel": "~anthropic/claude-opus-latest",
+  "subagentModel": "deepseek/deepseek-v4-pro",
   "aliases": {
-    "opus": "DeepSeek-V4-Pro",
-    "sonnet": "Kimi-K2.6",
-    "haiku": "GLM-5.1"
+    "opus": "DeepSeek-V4-Pro-openrouter",
+    "sonnet": "Kimi-K2.6-openrouter",
+    "haiku": "Qwen3.6-27B-omlx"
   },
   "displayNames": {
-    "opus": "DeepSeek via LiteLLM",
-    "sonnet": "Kimi via LiteLLM",
-    "haiku": "GLM via LiteLLM"
+    "opus": "DeepSeek-V4-Pro (openrouter)",
+    "sonnet": "Kimi-K2.6 (openrouter)",
+    "haiku": "Qwen3.6-27B (omlx)"
   }
 }

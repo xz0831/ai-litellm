@@ -3,7 +3,7 @@
 # x-limits: ignored by LiteLLM (unknown top-level key; safe_load passes it through).
 # One anchor per UNDERLYING model. Every surface model_name below references its
 # anchor via `model_info: *alias`, so editing ONE anchor updates every facade of
-# that underlying model at once (no drift across the 8->4 facade collapse).
+# that underlying model at once (no drift as facades multiply over few backends).
 #
 # max_input_tokens = the context window LiteLLM enforces (with enable_pre_call_checks).
 # max_output_tokens = gateway-exposed generation ceiling. When a provider does not
@@ -56,22 +56,35 @@ x-limits:
     x_output_source: quality-conservative-local-policy
     x_reasoning_confidence: owned-policy
     x_reasoning_source: local-runtime-no-reasoning-routing
+  qwen36_27b_local: &qwen36_27b_local
+    max_input_tokens: 131072
+    max_output_tokens: 16384
+    supports_reasoning: false
+    x_input_confidence: owned-policy
+    x_input_source: native-262144-per-model-config-json; owned-policy-local-throughput-cap
+    x_output_confidence: owned-policy
+    x_output_source: owned-policy-local-output-cap
+    x_reasoning_confidence: owned-policy
+    x_reasoning_source: local-runtime-no-reasoning-routing
 
 model_list:
-  # Raw provider-facing names. Useful for ad-hoc direct testing.
-  - model_name: DeepSeek-V4-Pro
+  # Raw provider-facing names (<Model>-<provider lowercase>). Useful for ad-hoc
+  # direct testing; the real backend is always visible in litellm_params.model.
+  # Codex deliberately does the OPPOSITE below (bundled-slug facades) because
+  # Codex validates models against its own catalog -- see the 2026-06-12 log.
+  - model_name: DeepSeek-V4-Pro-openrouter
     litellm_params:
       model: openrouter/deepseek/deepseek-v4-pro
       api_key: os.environ/OPENROUTER_API_KEY
     model_info: *deepseek_v4_pro
 
-  - model_name: Kimi-K2.6
+  - model_name: Kimi-K2.6-openrouter
     litellm_params:
       model: openrouter/moonshotai/kimi-k2.6
       api_key: os.environ/OPENROUTER_API_KEY
     model_info: *kimi_k26
 
-  - model_name: GLM-5.1
+  - model_name: GLM-5.1-openrouter
     litellm_params:
       model: openrouter/z-ai/glm-5.1
       api_key: os.environ/OPENROUTER_API_KEY
@@ -116,18 +129,29 @@ model_list:
 
   # Sample local runtime-facing route. Runtime lifecycle and machine-specific
   # discovered local routes are managed by ai-litellm metadata/sync.
-  - model_name: local-omlx-gemma4-12b
+  - model_name: Gemma4-12B-omlx
     litellm_params:
-      model: openai/local-omlx-gemma4-12b
+      model: openai/gemma4-12b
       api_base: http://127.0.0.1:8000/v1
       api_key: none
     model_info: *gemma_local
+
+  # Claude haiku-tier local model: first-class registry entry (not a discovered
+  # route) so the tier survives reinstall/discovery and is anchor-checked.
+  - model_name: Qwen3.6-27B-omlx
+    litellm_params:
+      model: openai/Qwen3.6-27B-4bit
+      api_base: http://127.0.0.1:8000/v1
+      api_key: none
+    model_info: *qwen36_27b_local
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
 x-gateway-output-clamp:
   # C4: provider-facing hard clamp for raw clients and future harnesses.
+  # Keep numerically aligned with harness adapterConfig.outputReservation
+  # defaults so the gateway clamp never fights a well-derived harness request.
   # The hook uses route model_info.max_output_tokens as capability and this
   # policy as the reservation ceiling, preserving at least minimum_input tokens.
   enabled: true
@@ -145,6 +169,10 @@ x-gateway-cost-guardrail:
   chars_per_token: 4
 
 litellm_settings:
+  # drop_params: harnesses over-advertise dialect params (thinking/betas/effort);
+  # dropping beats provider 400s across N harnesses x M backends. Cost: silent
+  # drops -- observe via `ai-litellm reasoning matrix` drop_risk column; per-model
+  # correction is a SUPPORTED_CAPABILITIES declaration, not flipping this flag.
   drop_params: true
   callbacks: [ai_litellm_callbacks.output_clamp.proxy_handler_instance]
 

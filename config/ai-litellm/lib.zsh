@@ -335,6 +335,19 @@ puts backends.join(",")
 ' "$AI_LITELLM_CONFIG" "$model_name"
 }
 
+ai_litellm_model_api_base() {
+  local model_name="$1"
+  model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || return 1
+  ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+target = ARGV[1]
+entry = Array(config["model_list"]).find { |e| e["model_name"] == target }
+base = entry && entry.dig("litellm_params", "api_base")
+exit 1 if base.to_s.empty?
+puts base
+' "$AI_LITELLM_CONFIG" "$model_name"
+}
+
 ai_litellm_litellm_setting() {
   local key="$1"
   ruby -ryaml -e '
@@ -490,6 +503,9 @@ puts JSON.generate(out)
 ' "$AI_LITELLM_CONFIG"
 }
 
+# Keep in lockstep with ai_litellm_harness_output_budget (node): same formula,
+# second implementation kept for one-pass batch derivation; check.zsh pins both
+# paths at 221950.
 ai_litellm_codex_catalog_context_map() {
   local harness="${1:-codex}"
   local descriptor
@@ -544,9 +560,10 @@ Array(config["model_list"]).each do |e|
   mi = e["model_info"] || {}
   context = positive_int(mi["max_input_tokens"])
   next unless name && context
-  backend = e.dig("litellm_params", "model").to_s
   api_key = e.dig("litellm_params", "api_key").to_s
-  local_runtime = backend.start_with?("openai/local-") || api_key == "none"
+  # api_key: none is the operative local-runtime marker (name-independent; the
+  # discovered-route writer and promoted local entries both emit it).
+  local_runtime = api_key == "none"
   # C2 is an OpenRouter/shared-window exposure. Local runtimes are already
   # policy-capped below their observed serving window, so do not shrink them
   # further through the Codex compatibility catalog.
@@ -1401,20 +1418,24 @@ for (const model of runtime.recommendedModels || []) console.log(model);
 ai_litellm_model_runtime() {
   local model_name="$1"
   model_name="$(ai_litellm_model_resolve "$model_name" 2>/dev/null)" || return 1
-  local backend runtime prefix backend_model
-  backend="$(ai_litellm_model_backend "$model_name" 2>/dev/null || true)"
-  backend_model="${backend#openai/}"
 
+  # Name-independent mapping: a model belongs to the runtime whose apiBase
+  # equals its registry api_base. Naming (suffix conventions) never decides
+  # runtime membership. Soundness depends on ai_litellm_runtime_ports_ok
+  # keeping apiBase unique per runtime.
+  local runtime api_base rt_base
   local -a runtimes
   runtimes=("${(@f)$(ai_litellm_runtime_names 2>/dev/null)}")
-  for runtime in "${runtimes[@]}"; do
-    prefix="$(ai_litellm_runtime_field "$runtime" modelPrefix 2>/dev/null || true)"
-    [[ -n "$prefix" ]] || continue
-    if [[ "$model_name" == "$prefix"* || "$backend_model" == "$prefix"* ]]; then
-      printf '%s\n' "$runtime"
-      return 0
-    fi
-  done
+  api_base="$(ai_litellm_model_api_base "$model_name" 2>/dev/null || true)"
+  if [[ -n "$api_base" ]]; then
+    for runtime in "${runtimes[@]}"; do
+      rt_base="$(ai_litellm_runtime_field "$runtime" apiBase 2>/dev/null || true)"
+      if [[ -n "$rt_base" && "$api_base" == "$rt_base" ]]; then
+        printf '%s\n' "$runtime"
+        return 0
+      fi
+    done
+  fi
 
   return 1
 }
@@ -1519,7 +1540,7 @@ const supported = (process.argv[3] || "").split(",").filter(Boolean);
 const rt = (settings.runtimes || {})[name];
 if (!rt) { console.error(`runtime not found: ${name}`); process.exit(1); }
 const errs = [];
-for (const k of ["kind", "baseUrl", "apiBase", "modelPrefix"]) {
+for (const k of ["kind", "baseUrl", "apiBase"]) {
   if (typeof rt[k] !== "string" || rt[k].length === 0) errs.push(`${k} must be a non-empty string`);
 }
 if (rt.kind && !supported.includes(rt.kind)) errs.push(`unsupported kind: ${rt.kind} (supported: ${supported.join(", ")})`);
@@ -1537,9 +1558,10 @@ if (errs.length) { console.error(`runtime ${name}: ${errs.join("; ")}`); process
 }
 
 # Cross-file consistency between settings.json runtimes and the litellm registry:
-# required expectedModels exist in the registry; prefix-matched models point at
-# the runtime's apiBase; every local-* registry model belongs to some runtime
-# prefix. recommendedModels are documentation/sample routes and may be absent.
+# required expectedModels exist in the registry, and suffix-named models
+# (<Model>-<runtime>) point at that runtime's apiBase. Naming is a lint surface
+# only — runtime MEMBERSHIP is decided by api_base equality (ai_litellm_model_runtime).
+# recommendedModels are documentation/sample routes and may be absent.
 ai_litellm_runtime_consistency() {
   [[ -f "$AI_LITELLM_SETTINGS" && -f "$AI_LITELLM_CONFIG" ]] || return 0
   ruby -ryaml -rjson -e '
@@ -1550,23 +1572,18 @@ names = models.map { |e| e["model_name"] }.compact
 errs = []
 runtimes = settings["runtimes"] || {}
 runtimes.each do |rt_name, rt|
-  prefix = rt["modelPrefix"]
   api_base = rt["apiBase"]
   Array(rt["expectedModels"]).each do |m|
     errs << "#{rt_name}: expectedModel #{m} missing from registry" unless names.include?(m)
   end
-  if prefix
-    models.each do |e|
-      n = e["model_name"]
-      next unless n && n.start_with?(prefix)
-      mb = e.dig("litellm_params", "api_base")
-      errs << "#{n}: api_base #{mb.inspect} != runtime #{rt_name} apiBase #{api_base.inspect}" unless mb == api_base
-    end
+  suffix = rt["modelSuffix"].to_s
+  suffix = "-#{rt_name.to_s.downcase}" if suffix.empty?
+  models.each do |e|
+    n = e["model_name"]
+    next unless n && n.end_with?(suffix)
+    mb = e.dig("litellm_params", "api_base")
+    errs << "#{n}: api_base #{mb.inspect} != runtime #{rt_name} apiBase #{api_base.inspect}" unless mb == api_base
   end
-end
-local_prefixes = runtimes.values.map { |r| r["modelPrefix"] }.compact
-names.select { |n| n.start_with?("local-") }.each do |n|
-  errs << "#{n}: local model matches no runtime modelPrefix" unless local_prefixes.any? { |p| n.start_with?(p) }
 end
 if errs.any?
   errs.each { |e| warn e }
@@ -2573,14 +2590,14 @@ ai_litellm_runtime_routes_write() {
 settings_path, config_path, runtime_name, dry_run, *model_ids = ARGV
 settings = JSON.parse(File.read(settings_path))
 rt = (settings["runtimes"] || {})[runtime_name] || {}
-prefix = rt["modelPrefix"].to_s
-prefix = "local-#{runtime_name}-" if prefix.empty?
 api_base = rt["apiBase"].to_s
 if api_base.empty?
   warn "runtime #{runtime_name}: apiBase is required for discovered routes"
   exit 1
 end
 
+# Fallback mirror of settings.json runtimes.<rt>.defaultModelInfo; keep the
+# two in sync (deleting the settings block silently reverts to this copy).
 default_info = rt["defaultModelInfo"] || {
   "max_input_tokens" => 8192,
   "max_output_tokens" => 4096,
@@ -2592,6 +2609,21 @@ default_info = rt["defaultModelInfo"] || {
   "x_reasoning_confidence" => "owned-policy",
   "x_reasoning_source" => "local-runtime-no-reasoning-routing"
 }
+
+# Per-model overrides for discovered routes: glob patterns matched against the
+# upstream model id and the generated route name; later patterns win.
+overrides = rt["modelInfoOverrides"] || {}
+info_for = lambda do |model_id, route|
+  info = default_info.dup
+  overrides.each do |pattern, partial|
+    next unless partial.is_a?(Hash)
+    if File.fnmatch(pattern, model_id.to_s, File::FNM_CASEFOLD) ||
+       File.fnmatch(pattern, route.to_s, File::FNM_CASEFOLD)
+      info = info.merge(partial)
+    end
+  end
+  info
+end
 
 start_marker = "# BEGIN ai-litellm discovered local routes"
 end_marker = "# END ai-litellm discovered local routes"
@@ -2613,11 +2645,23 @@ end
 clean = clean_lines.join
 config = (YAML.load(clean, aliases: true) rescue YAML.load(clean))
 existing = Array(config["model_list"]).map { |entry| entry["model_name"] }.compact
+# Registry entries already serving the same upstream (model, api_base) make a
+# discovered route redundant even under a different name (e.g. a promoted
+# first-class entry like Qwen3.6-27B-oMLX).
+existing_backends = {}
+Array(config["model_list"]).each do |entry|
+  params = entry["litellm_params"] || {}
+  existing_backends[[params["model"].to_s, params["api_base"].to_s]] = true
+end
 
-slug = lambda do |value|
-  value.to_s.downcase
+# Route naming: <CleanedModelId>-<runtime> (suffix auto-derived from the
+# runtime name, lowercase; modelSuffix overrides if explicitly set).
+suffix = rt["modelSuffix"].to_s
+suffix = "-#{runtime_name.to_s.downcase}" if suffix.empty?
+clean_id = lambda do |value|
+  value.to_s
     .gsub(%r{\Aopenai/}, "")
-    .gsub(/[^a-z0-9._-]+/, "-")
+    .gsub(/[^A-Za-z0-9._-]+/, "-")
     .gsub(/\A[-.]+|[-.]+\z/, "")
 end
 scalar = lambda do |value|
@@ -2627,9 +2671,11 @@ end
 seen = {}
 routes = model_ids.map do |model_id|
   next if model_id.to_s.empty?
-  model_slug = slug.call(model_id)
-  route = model_slug.start_with?(prefix) ? model_slug : "#{prefix}#{model_slug}"
-  next if route == prefix || existing.include?(route) || seen[route]
+  base = clean_id.call(model_id)
+  route = base.end_with?(suffix) ? base : "#{base}#{suffix}"
+  next if route == suffix
+  next if existing.include?(route) || seen[route]
+  next if existing_backends[["openai/#{model_id}", api_base]]
   seen[route] = true
   [route, model_id]
 end.compact
@@ -2647,8 +2693,11 @@ unless routes.empty?
     block << "      model: #{scalar.call("openai/#{model_id}")}\n"
     block << "      api_base: #{scalar.call(api_base)}\n"
     block << "      api_key: none\n"
+    # Inline, not *anchor refs: this block is regenerated wholesale and these
+    # numbers are runtime POLICY (defaults/overrides), not provider capability
+    # (see the ai_litellm_model_info_anchor_refs_ok exemption).
     block << "    model_info:\n"
-    default_info.each do |key, value|
+    info_for.call(model_id, route).each do |key, value|
       block << "      #{key}: #{scalar.call(value)}\n"
     end
   end
@@ -2717,6 +2766,8 @@ ai_litellm_sync() {
   echo "ai-litellm sync"
   (( dry_run )) && echo "- dry-run: no files will be changed and proxy will not restart"
 
+  # Order matters: discover local routes BEFORE the codex catalog/config so
+  # freshly discovered local slugs are included in the same sync.
   ai_litellm_runtime_routes_refresh "$dry_run" || failed=1
 
   codex_command="$(ai_litellm_harness_json codex command 2>/dev/null || printf 'codex')"
@@ -2768,10 +2819,15 @@ ai_litellm_sync() {
 }
 
 ai_litellm_doctor_local_route_uniqueness() {
+  # Scope: local-runtime routes only (api_key: none marker). Remote routes may
+  # legitimately duplicate model_name for LiteLLM load balancing; a duplicated
+  # local route is always a discovery/promotion bug.
   ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
-names = Array(config["model_list"]).map { |entry| entry["model_name"] }.compact
-local_names = names.select { |name| name.start_with?("local-") }
+local_names = Array(config["model_list"])
+  .select { |entry| entry.dig("litellm_params", "api_key").to_s == "none" }
+  .map { |entry| entry["model_name"] }
+  .compact
 counts = Hash.new(0)
 local_names.each { |name| counts[name] += 1 }
 duplicates = counts.select { |_name, count| count > 1 }.keys
@@ -3853,7 +3909,9 @@ descriptor_paths(harness_dir).each do |path|
       selections << [entry["slug"], entry["slug"]] if entry["slug"]
     end
     registry.keys.grep(/^codex-/).each { |model| selections << [model, model] }
-    registry.keys.grep(/^local-/).each { |model| selections << [model, model] }
+    # Local-runtime routes are marked by api_key: none (name-independent — naming
+    # never decides runtime membership; see ai_litellm_model_runtime).
+    registry.each { |model, entry| selections << [model, model] if entry.dig("litellm_params", "api_key").to_s == "none" }
     seen = Set.new
     selections.each do |selection, model|
       next unless model && registry.key?(model)
@@ -4406,7 +4464,8 @@ def descriptor_selections(descriptor, registry)
       model = entry["slug"]
       rows << [model, model] if model
     end
-    registry.keys.grep(/^local-/).each { |model| rows << [model, model] }
+    # api_key: none marks local-runtime routes (name-independent).
+    registry.each { |model, entry| rows << [model, model] if entry.dig("litellm_params", "api_key").to_s == "none" }
   end
 
   Array(descriptor.dig("adapterConfig", "context", "selections")).each do |item|
@@ -4982,6 +5041,10 @@ exit(has_hook && enabled ? 0 : 1)
 ai_litellm_model_info_anchor_refs_ok() {
   ruby -e '
 text = File.read(ARGV[0])
+# Discovered local routes are generated with inline model_info derived from
+# runtimes.<rt> defaults/overrides; the anchor policy applies to
+# hand-maintained entries only.
+text = text.gsub(/^# BEGIN ai-litellm discovered local routes\n.*?^# END ai-litellm discovered local routes\n/m, "")
 entries = text.split(/\n(?=  - model_name:\s*)/)
 errors = []
 entries.each do |entry|
@@ -5085,7 +5148,8 @@ def selections(descriptor, registry)
       model = entry["slug"]
       out << [model, model] if model
     end
-    registry.keys.grep(/^local-/).each { |model| out << [model, model] }
+    # api_key: none marks local-runtime routes (name-independent).
+    registry.each { |model, entry| out << [model, model] if entry.dig("litellm_params", "api_key").to_s == "none" }
   end
   out.uniq.select { |_selection, model| model && registry.key?(model) }
 end

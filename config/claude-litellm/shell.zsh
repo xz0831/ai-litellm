@@ -1,5 +1,5 @@
-# Claude Code through OpenRouter's Anthropic-compatible endpoint by default,
-# with a LiteLLM proxy fallback for local and non-Claude routes.
+# Claude Code on non-Anthropic models: LiteLLM proxy by default (OpenRouter +
+# local runtime routes), with an OpenRouter Anthropic-compatible direct mode.
 
 if ! typeset -f ai_litellm >/dev/null 2>&1 && [[ -f "${AI_LITELLM_FABRIC_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm-fabric}/config/ai-litellm/lib.zsh" ]]; then
   source "${AI_LITELLM_FABRIC_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm-fabric}/config/ai-litellm/lib.zsh"
@@ -43,9 +43,18 @@ _claude_litellm_default_mode() {
   esac
 }
 
+# Direct mode has no catalog to validate against; consume arg#1 as a model
+# only when it is shaped like one, or the user explicitly chose the mode.
 _claude_litellm_direct_model_like() {
   local candidate="$1"
   [[ "$candidate" == "~"* || "$candidate" == */* || "$candidate" == anthropic:* ]]
+}
+
+# Direct aliases carry an explicit provider prefix for readability
+# (openrouter/deepseek/...); OpenRouter's endpoint expects the bare model id,
+# so the prefix is stripped at the wire.
+_claude_litellm_direct_wire_model() {
+  printf '%s\n' "${1#openrouter/}"
 }
 
 _claude_litellm_direct_default_request() {
@@ -81,7 +90,7 @@ _claude_litellm_direct_model_arg_for_request() {
     return 0
   fi
 
-  printf '%s\n' "$requested"
+  _claude_litellm_direct_wire_model "$requested"
 }
 
 _claude_litellm_target_model_for_request() {
@@ -103,6 +112,9 @@ _claude_litellm_target_model_for_request() {
   printf '%s\n' "$resolved_model"
 }
 
+# For tiers, return the tier name itself: --model <tier> preserves Claude
+# Code's native tier semantics (in-session /model opus|sonnet|haiku, background
+# calls on haiku) while ANTHROPIC_DEFAULT_<TIER>_MODEL carries the real route.
 _claude_litellm_resolve_model_arg() {
   local requested="$1"
   if [[ -z "$requested" ]]; then
@@ -249,6 +261,9 @@ _claude_litellm_launch_proxy() {
     "$base_url_env=$(ai_litellm_base_url)"
     "$auth_env=$master_key"
     "$empty_api_key_env="
+    # Discovery stays on for proxy but is dormant: the binary only lists ids
+    # matching ^(claude|anthropic) (verified); our surface names intentionally
+    # do not, so this lights up only if such alias routes ever exist.
     "$discovery_env=1"
     "$isolation_env=$CLAUDE_LITELLM_CLAUDE_CONFIG"
     "$attribution_env=0"
@@ -260,13 +275,17 @@ _claude_litellm_launch_proxy() {
   for tier in "${tiers[@]}"; do
     tier_upper="${tier:u}"
     tier_model="$(_claude_litellm_json "aliases.$tier" 2>/dev/null || true)"
-    tier_display="$(_claude_litellm_json "displayNames.$tier" 2>/dev/null || printf '%s via LiteLLM' "$tier_upper")"
+    # Display name defaults to the real model id so the picker shows what
+    # actually serves the tier; displayNames.<tier> remains a cosmetic override.
+    tier_display="$(_claude_litellm_json "displayNames.$tier" 2>/dev/null || printf '%s' "$tier_model")"
     env_assignments+=(
       "${tier_model_prefix}_${tier_upper}_MODEL=$tier_model"
-      "${tier_display_prefix}_${tier_upper}_MODEL_NAME=$tier_display"
     )
+    [[ -n "$tier_display" ]] && env_assignments+=("${tier_display_prefix}_${tier_upper}_MODEL_NAME=$tier_display")
     tier_caps="$(_claude_litellm_json "capabilities.$tier" 2>/dev/null || true)"
     if [[ -n "$tier_caps" ]]; then
+      # 'none' = declare an EMPTY capability set (blocks thinking/effort
+      # advertising); absent key = inject nothing (keep claude defaults).
       [[ "$tier_caps" == "none" ]] && tier_caps=""
       env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL_SUPPORTED_CAPABILITIES=$tier_caps")
     fi
@@ -335,6 +354,8 @@ _claude_litellm_launch_direct() {
     "$empty_api_key_env="
     "$discovery_env=0"
     "$isolation_env=$CLAUDE_LITELLM_CLAUDE_CONFIG"
+    # Part of the OpenRouter-for-Claude-Code recipe: the fast-mode org check
+    # targets Anthropic first-party auth, which direct-mode tokens cannot satisfy.
     "$fast_mode_org_check_env=1"
     "$attribution_env=0"
   )
@@ -345,8 +366,10 @@ _claude_litellm_launch_direct() {
   for tier in "${tiers[@]}"; do
     tier_upper="${tier:u}"
     tier_model="$(_claude_litellm_json "directAliases.$tier" 2>/dev/null || true)"
-    tier_display="$(_claude_litellm_json "directDisplayNames.$tier" 2>/dev/null || printf '%s via OpenRouter' "$tier_upper")"
-    [[ -n "$tier_model" ]] && env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL=$tier_model")
+    # Display name defaults to the real model id so the picker shows what
+    # actually serves the tier; directDisplayNames.<tier> remains an override.
+    tier_display="$(_claude_litellm_json "directDisplayNames.$tier" 2>/dev/null || printf '%s' "$tier_model")"
+    [[ -n "$tier_model" ]] && env_assignments+=("${tier_model_prefix}_${tier_upper}_MODEL=$(_claude_litellm_direct_wire_model "$tier_model")")
     [[ -n "$tier_display" ]] && env_assignments+=("${tier_display_prefix}_${tier_upper}_MODEL_NAME=$tier_display")
     tier_caps="$(_claude_litellm_json "directCapabilities.$tier" 2>/dev/null || true)"
     if [[ -n "$tier_caps" ]]; then
@@ -355,9 +378,13 @@ _claude_litellm_launch_direct() {
     fi
   done
 
+  # Direct-only subagent quality pin (subagents >= opus tier). Proxy mode has
+  # no analogue on purpose: unpinned subagents inherit the main-loop model
+  # (binary default), which respects per-session /model and local-tier choices;
+  # this value is OpenRouter vocabulary and would 404 against LiteLLM anyway.
   local subagent_model
   subagent_model="$(_claude_litellm_json subagentModel 2>/dev/null || _claude_litellm_json directAliases.opus 2>/dev/null || true)"
-  [[ -n "$subagent_model" ]] && env_assignments+=("$subagent_model_env=$subagent_model")
+  [[ -n "$subagent_model" ]] && env_assignments+=("$subagent_model_env=$(_claude_litellm_direct_wire_model "$subagent_model")")
 
   local reasoning_output
   local -a claude_extra_args
@@ -378,7 +405,7 @@ claude-litellm() {
     -h|--help)
       echo "Usage: claude-litellm [--direct|--proxy] [opus|sonnet|haiku|model_name|provider_model] [claude args...]"
       echo "       claude-litellm --list|--status   (harness-specific info)"
-      echo "Default: OpenRouter Anthropic-compatible direct mode; use --proxy for LiteLLM/local routes."
+      echo "Default: LiteLLM proxy mode (OpenRouter + local routes); use --direct for the OpenRouter Anthropic-compatible endpoint."
       echo "Reasoning defaults: ai-litellm harness reasoning [set|unset] claude"
       echo "Proxy lifecycle moved to: ai-litellm proxy start|stop|restart|logs|doctor"
       return 0

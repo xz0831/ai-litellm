@@ -166,6 +166,9 @@ def gateway_output_cap(kwargs: dict[str, Any]) -> int | None:
     if context is not None:
         configured_headroom = _policy_value(policy, "tokenizer_headroom", "tokenizerHeadroom") or 0
         configured_minimum_input = _policy_value(policy, "minimum_input", "minimumInput") or DEFAULT_POLICY["minimum_input"]
+        # 10%/50% context scaling keeps the absolute policy constants meaningful
+        # on tiny local windows (gemma 8192 -> cap 3277). Mirrored in lib.zsh's
+        # Node and Ruby copies -- change all three together (check.zsh pins 3277/221950).
         headroom = min(configured_headroom, math.floor(context * 0.1))
         minimum_input = min(configured_minimum_input, max(1, math.floor(context * 0.5)))
         max_reservation = context - headroom - minimum_input
@@ -174,6 +177,8 @@ def gateway_output_cap(kwargs: dict[str, Any]) -> int | None:
     return max(1, cap)
 
 
+# Lower-only by design: absent output keys mean provider-default semantics;
+# the harness layer (not the gateway) is where reservations get introduced.
 def clamp_token_reservations(kwargs: dict[str, Any]) -> dict[str, Any]:
     cap = gateway_output_cap(kwargs)
     if cap is None:
@@ -287,6 +292,8 @@ def enforce_cost_guardrail(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 class GatewayOutputClamp(CustomLogger):
     async def async_pre_call_deployment_hook(self, kwargs: dict[str, Any], call_type: Any) -> dict[str, Any]:
+        # Clamp first so the guardrail prices the post-clamp request,
+        # not the client's pre-clamp ask.
         return enforce_cost_guardrail(clamp_token_reservations(kwargs))
 
 
