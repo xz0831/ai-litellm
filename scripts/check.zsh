@@ -62,6 +62,14 @@ test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-o
 test "$(ai_litellm_model_backend openrouter/deepseek/deepseek-v4-pro)" = "openrouter/deepseek/deepseek-v4-pro"
 ai_litellm_model_limits openrouter/moonshotai/kimi-k2.6 >/dev/null
 test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-v4-pro)" = "none minimal low medium high xhigh"
+# Un-rendered placeholder guard (run-from-checkout footgun): a literal
+# __FABRIC_HOME__ path must be refused; the rendered prefix path must pass.
+# Non-vacuous: if the guard is missing, the positive assertion below fails.
+if ai_litellm_assert_rendered_path "__FABRIC_HOME__/state/goose-litellm" "test" 2>/dev/null; then
+  echo "ai_litellm_assert_rendered_path accepted an un-rendered path" >&2
+  exit 1
+fi
+ai_litellm_assert_rendered_path "$prefix/state/goose-litellm" "test"
 runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown gemma4-12b)"
 [[ "$runtime_routes_dry" == *"MarkItDown-omlx -> openai/MarkItDown"* ]]
 [[ "$runtime_routes_dry" != *"gemma4-12b"* ]]

@@ -615,6 +615,32 @@ ai_litellm_harness_names() {
   done
 }
 
+# Refuse to act on an un-rendered install placeholder. Harness descriptor paths
+# carry install tokens (HOME / FABRIC_HOME, each wrapped in double underscores)
+# that scripts/install.zsh renders at install time; running a bin/ wrapper
+# straight from a source checkout skips that rendering, so a literal placeholder
+# directory would be created under the current directory (the stray run-from-
+# checkout state-tree footgun). The installed package is already covered by
+# check.zsh's placeholder grep; this guards the run-from-checkout path.
+#
+# The marker patterns are assembled from fragments on purpose: install.zsh would
+# otherwise render the literal tokens in this very function and defeat the guard.
+ai_litellm_assert_rendered_path() {
+  local path="$1" context="${2:-path}"
+  local us="__" home_marker fabric_marker
+  home_marker="${us}HOME${us}"
+  fabric_marker="${us}FABRIC_HOME${us}"
+  case "$path" in
+  *"$fabric_marker"*|*"$home_marker"*)
+    echo "ai-litellm: refusing to create un-rendered ${context}: ${path}" >&2
+    echo "  A command was likely run from a source checkout instead of the installed package;" >&2
+    echo "  run scripts/install.zsh and use the installed command under ~/.local/bin." >&2
+    return 1
+    ;;
+  esac
+  return 0
+}
+
 ai_litellm_harness_validate() {
   local harness="$1"
   local descriptor adapter schema
@@ -928,6 +954,7 @@ ai_litellm_ensure_claude_settings_file() {
 
   local settings_dir tmp
   settings_dir="${settings_path:h}"
+  ai_litellm_assert_rendered_path "$settings_dir" "Claude settings dir" || return 1
   mkdir -p "$settings_dir" || return 1
 
   if [[ -f "$settings_path" ]]; then
@@ -1023,6 +1050,7 @@ ai_litellm_shared_env_links_ensure() {
     return 0
   fi
 
+  ai_litellm_assert_rendered_path "$config_dir" "harness shared-env dir" || return $?
   mkdir -p "$config_dir" || return 1
 
   local item link target backup
@@ -1216,6 +1244,7 @@ ai_litellm_launch_env_injector() {
   isolation_env="$(ai_litellm_harness_json "$harness" isolation.env 2>/dev/null || true)"
   value="$(ai_litellm_harness_json "$harness" paths.home 2>/dev/null || true)"
   if [[ -n "$isolation_env" && -n "$value" ]]; then
+    ai_litellm_assert_rendered_path "$value" "harness home" || return $?
     mkdir -p "$value"
     env_assignments+=("$isolation_env=$value")
   fi
@@ -1230,6 +1259,8 @@ ai_litellm_render_opencode_config() {
   descriptor="$(ai_litellm_harness_descriptor "$harness")" || return 1
   config_path="$(ai_litellm_harness_json "$harness" paths.config)" || return 1
   config_dir="$(ai_litellm_harness_json "$harness" paths.configDir)" || return 1
+  ai_litellm_assert_rendered_path "$config_path" "harness config" || return $?
+  ai_litellm_assert_rendered_path "$config_dir" "harness config dir" || return $?
   mkdir -p "${config_path:h}" "$config_dir"
 
   ai_litellm_ruby -rjson -ryaml -e '
@@ -1353,9 +1384,9 @@ ai_litellm_launch_opencode() {
   xdg_data_env="$(ai_litellm_harness_json "$harness" adapterConfig.xdgDataEnv 2>/dev/null || printf 'XDG_DATA_HOME')"
   xdg_cache_env="$(ai_litellm_harness_json "$harness" adapterConfig.xdgCacheEnv 2>/dev/null || printf 'XDG_CACHE_HOME')"
   xdg_state_env="$(ai_litellm_harness_json "$harness" adapterConfig.xdgStateEnv 2>/dev/null || printf 'XDG_STATE_HOME')"
-  [[ -n "$data_home" ]] && { mkdir -p "$data_home"; env_assignments+=("$xdg_data_env=$data_home"); }
-  [[ -n "$cache_home" ]] && { mkdir -p "$cache_home"; env_assignments+=("$xdg_cache_env=$cache_home"); }
-  [[ -n "$state_home" ]] && { mkdir -p "$state_home"; env_assignments+=("$xdg_state_env=$state_home"); }
+  [[ -n "$data_home" ]] && { ai_litellm_assert_rendered_path "$data_home" "harness data home" || return $?; mkdir -p "$data_home"; env_assignments+=("$xdg_data_env=$data_home"); }
+  [[ -n "$cache_home" ]] && { ai_litellm_assert_rendered_path "$cache_home" "harness cache home" || return $?; mkdir -p "$cache_home"; env_assignments+=("$xdg_cache_env=$cache_home"); }
+  [[ -n "$state_home" ]] && { ai_litellm_assert_rendered_path "$state_home" "harness state home" || return $?; mkdir -p "$state_home"; env_assignments+=("$xdg_state_env=$state_home"); }
 
   command="$(ai_litellm_harness_json "$harness" command)" || return 1
   ai_litellm_harness_exec_env "$harness" "${env_assignments[@]}" -- "$command" "${opencode_args[@]}"
