@@ -139,6 +139,16 @@ done
 ai_litellm_model_limits GLM-5.1-openrouter >/dev/null
 ai_litellm_context_gateway_clamp_policy_ok
 ai_litellm_context_gateway_clamp_configured
+# Output-reservation policy must agree across all descriptors + the gateway copy.
+ai_litellm_context_output_reservation_aligned
+# Non-vacuous: a drifted gateway copy must trip the guard (if-form avoids the zsh
+# `set -e` + return-1 early exit that bare !-negation can cause).
+reservation_drift_cfg="$HOME/reservation-drift.yaml"
+sed 's/tokenizer_headroom: 8192/tokenizer_headroom: 8191/' "$AI_LITELLM_CONFIG" > "$reservation_drift_cfg"
+if AI_LITELLM_CONFIG="$reservation_drift_cfg" ai_litellm_context_output_reservation_aligned 2>/dev/null; then
+  echo "output reservation alignment guard failed to detect a drifted gateway copy" >&2
+  exit 1
+fi
 ai_litellm_context_gateway_cost_guardrail_policy_ok
 ai_litellm_context_gateway_cost_guardrail_configured
 ai_litellm_context_observations_ok

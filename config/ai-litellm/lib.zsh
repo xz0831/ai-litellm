@@ -3127,6 +3127,7 @@ ai_litellm_doctor() {
   ai_litellm_doctor_check "Codex shortcuts do not shadow subcommands" ai_litellm_doctor_shortcuts || failed=1
   ai_litellm_doctor_check "local model routes are unique" ai_litellm_doctor_local_route_uniqueness || failed=1
   ai_litellm_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
+  ai_litellm_doctor_check "output reservation policy aligned" ai_litellm_context_output_reservation_aligned || failed=1
   ai_litellm_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
   ai_litellm_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
   ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
@@ -5129,6 +5130,53 @@ end
 ' "$AI_LITELLM_CONFIG"
 }
 
+# Drift guard for the output-reservation policy. The triple {default,
+# tokenizerHeadroom, minimumInput} is intentionally replicated across each
+# harness descriptor (adapterConfig.outputReservation, camelCase) and the
+# provider-facing gateway clamp (x-gateway-output-clamp, snake_case): they are
+# distinct enforcement layers in different runtimes (zsh/node vs. python-in-
+# litellm) that must nonetheless share one numeric policy. Rather than physically
+# unify them, this asserts every copy agrees so the duplication can never
+# silently drift. Per-harness divergence is deliberately disallowed.
+ai_litellm_context_output_reservation_aligned() {
+  ai_litellm_ruby -rjson -ryaml -e '
+harness_dir, config = ARGV
+errors = []
+canon = nil
+canon_src = nil
+record = lambda do |src, triple|
+  if canon.nil?
+    canon = triple
+    canon_src = src
+  elsif triple != canon
+    errors << "#{src} #{triple.inspect} != #{canon_src} #{canon.inspect}"
+  end
+end
+
+Dir.glob(File.join(harness_dir, "*.json")).sort.each do |path|
+  name = File.basename(path, ".json")
+  next if name == "schema"
+  desc = (JSON.parse(File.read(path)) rescue nil) or next
+  res = desc.dig("adapterConfig", "outputReservation") or next
+  record.call("#{name}.json", [res["default"], res["tokenizerHeadroom"], res["minimumInput"]])
+end
+
+cfg = (YAML.load_file(config, aliases: true) rescue (YAML.load_file(config) rescue {}))
+gw = cfg["x-gateway-output-clamp"]
+record.call("x-gateway-output-clamp", [gw["default"], gw["tokenizer_headroom"], gw["minimum_input"]]) if gw.is_a?(Hash)
+
+if canon.nil?
+  warn "no output-reservation policy found in any descriptor or gateway"
+  exit 1
+end
+unless errors.empty?
+  warn "output reservation policy drift detected (every copy must match):"
+  errors.each { |e| warn "  #{e}" }
+  exit 1
+end
+' "$AI_LITELLM_HARNESSES_DIR" "$AI_LITELLM_CONFIG"
+}
+
 ai_litellm_context_gateway_cost_guardrail_policy_ok() {
   ai_litellm_ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
@@ -5518,6 +5566,7 @@ ai_litellm_context_doctor() {
   ai_litellm_context_doctor_check "native Codex active gpt-5.5 catalog matches bundled catalog" ai_litellm_context_codex_matches_bundled || failed=1
   ai_litellm_context_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
   ai_litellm_context_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
+  ai_litellm_context_doctor_check "output reservation policy aligned" ai_litellm_context_output_reservation_aligned || failed=1
   ai_litellm_context_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
   ai_litellm_context_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
   ai_litellm_context_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
@@ -5664,6 +5713,7 @@ ai_litellm_model_policy_audit() {
   ai_litellm_doctor_check "model_info uses x-limits anchors" ai_litellm_model_info_anchor_refs_ok || failed=1
   ai_litellm_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
   ai_litellm_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
+  ai_litellm_doctor_check "output reservation policy aligned" ai_litellm_context_output_reservation_aligned || failed=1
   ai_litellm_doctor_check "gateway output clamp configured" ai_litellm_context_gateway_clamp_configured || failed=1
   ai_litellm_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
   ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
