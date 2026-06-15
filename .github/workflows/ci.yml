@@ -58,3 +58,34 @@ jobs:
           assert payload["hook_enforced_cost_guardrail"] is True
           assert payload["recommended_policy"] == "async_pre_call_deployment_hook"
           PY
+
+  tool-fidelity:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install LiteLLM
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'litellm[proxy]==1.81.14'
+
+      - name: Verify tool-call translation fidelity
+        run: |
+          ./scripts/verify_tool_call_fidelity.py --json > fidelity.json
+          cat fidelity.json
+          python - <<'PY'
+          import json
+          p = json.load(open("fidelity.json"))["mock"]
+          # Anthropic <-> OpenAI tool translation must survive the round trip:
+          assert p["single_turn_tool_use_roundtrip"] is True
+          assert p["request_tools_translated"] is True
+          assert p["multiturn_tool_result_roundtrip"] is True
+          assert p["multiturn_history_translated"] is True
+          assert p["thinking_plus_tooluse_resume_ok"] is True
+          PY

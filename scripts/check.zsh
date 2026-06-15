@@ -16,6 +16,7 @@ for file in \
 done
 
 python3 -m py_compile "$repo_root/scripts/verify_litellm_token_clamp.py"
+python3 -m py_compile "$repo_root/scripts/verify_tool_call_fidelity.py"
 python3 -m py_compile "$repo_root/config/ai_litellm_callbacks/output_clamp.py"
 
 for file in \

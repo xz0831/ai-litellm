@@ -126,6 +126,12 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 ---
 
+**결정: tool-call의 *충실도*는 fabric 책임(테스트 대상), *역량*은 모델 한계(불가항력)다 — 둘을 mock provider로 가르는 회귀 가드를 둔다.** [실증, 2026-06-15]
+
+모델이 harness 안에서 tool을 잘못 고르거나 방황하는 것은 모델 역량 문제로 fabric이 못 고친다. 그러나 **잘 만들어진 tool_use가 LiteLLM의 Anthropic↔OpenAI 번역에서 드롭/손상/400되는 것**(알려진 LiteLLM #25321/#26395/#28045류, streaming tool-arg 손상, multi-turn reasoning_content 결손)은 우리(번역 설정의 소유자) 책임이고 **LiteLLM 버전에 취약**하다. 그래서 `verify_litellm_token_clamp.py`와 같은 자리·방식의 `scripts/verify_tool_call_fidelity.py`를 둔다: mock OpenAI provider + throwaway 실제 LiteLLM proxy로, (a) Anthropic tools/tool_use/tool_result → OpenAI 요청 형태(요청 충실도)와 (b) OpenAI tool_calls → Anthropic tool_use 블록(응답 충실도)을, 단일·멀티턴 + Claude Code가 resume 시 만드는 thinking-block 동반 케이스(#26395 트리거)까지 무비용·결정론적으로 검증한다. 2026-06-15 실측: cloud(DeepSeek/Kimi)·로컬(Qwen3.6-27B) 모두 단일·멀티턴 tool 왕복이 깨끗했다 — 즉 모델이 방황하면 그것은 모델 한계이지 fabric 결함이 아님이 *증명 가능*하다. CI 잡 `tool-fidelity`가 litellm 1.81.14 핀으로 회귀를 막는다.
+
+> **반론**: mock은 우리 번역 계층만 격리해 친다(실제 provider의 tool-calling quirk는 `--live-model`로만). 그게 의도다 — 실 provider 호출은 과금·비결정적이라 CI에 못 넣는다. 실 백엔드 신뢰는 `--live-model` 수동 스모크가 담당한다.
+
 ## 5. 시크릿 계층
 
 | 계층 | 보관처 | 흐름 | 강제 |
@@ -170,6 +176,7 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 | 기본 모드/디스패치/alias 해석/wire-strip | ✅ check |
 | 모델 선택 계약: unresolvable proxy positional은 loud-error(프롬프트 누출 금지) — §3 | ✅ check (06-13 추가; dispatcher stub 블록의 비-vacuous 단언) |
 | 발견 라우트 litellmParamsOverrides glob 주입(thinking-off 등) — §3 | ✅ check (06-13 추가; temp-settings 오버레이로 매칭/비매칭 검증) |
+| tool-call 번역 충실도(Anthropic↔OpenAI, 단일/멀티턴/thinking-resume) — §4 | ✅ verify_tool_call_fidelity.py + CI `tool-fidelity` 잡 (litellm 1.81.14 핀) |
 | 공유 settings env 라우팅 키 금지 | ✅ launch lint + check |
 | 양 오버레이의 defaultMode=default **렌더 기본값** (라이브 오버레이의 운영자 상향은 사양임 — §2) | ✅ check (06-12 추가; throwaway HOME의 신규 렌더만 검사) |
 | symlink 존재·대상·`~/.claude` 비생성·멱등 | ✅ check |

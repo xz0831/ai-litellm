@@ -296,6 +296,16 @@ To re-check gateway-side output clamping against the installed LiteLLM version:
 ./scripts/verify_litellm_token_clamp.py
 ```
 
+To re-check **tool-call translation fidelity** — that a well-formed tool call
+survives the Anthropic `/v1/messages` ↔ OpenAI round trip without being dropped,
+corrupted, or 400'd (the fabric's responsibility; a model *choosing* the wrong
+tool is not) — run, also after every LiteLLM upgrade:
+
+```zsh
+./scripts/verify_tool_call_fidelity.py              # mock provider, zero-cost, deterministic
+./scripts/verify_tool_call_fidelity.py --live-model Qwen3.6-27B-omlx   # optional real-backend smoke (BILLABLE for cloud routes)
+```
+
 Run this after every LiteLLM upgrade: the clamp findings are
 version-specific, and the doctor only checks configuration presence, not
 behavior.
