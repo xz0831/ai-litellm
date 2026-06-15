@@ -1,5 +1,12 @@
 # Model ↔ Harness Context/Output Interaction — Audit & Codex Handoff
 
+> **⚠️ Transient handoff note — point-in-time snapshot (2026-06-08).** This is a captured
+> audit/handoff record, not living documentation: the commits, line numbers, and model states
+> it cites may since have changed. Durable decisions live in
+> [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md) and
+> [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md); this file is retained only
+> as the empirical evidence base they reference. Not shipped by `scripts/install.zsh`.
+
 Audit method: 4 parallel probes (input-window, output-reservation, name-match quirks, empirical
 boundary) → per-probe adversarial verification → reduction. Live boundary probes against the running
 proxy cost ~$0.02 total. Live runtime = the installed package `~/.local/share/ai-litellm-fabric`;

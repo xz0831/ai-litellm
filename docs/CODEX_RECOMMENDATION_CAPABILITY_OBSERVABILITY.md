@@ -1,8 +1,14 @@
 # 강력 권고 — Capability Observability: "추측 값은 source of truth에 남기지 않는다"
 
+> **⚠️ 일시적 핸드오프 노트 — 특정 시점 스냅샷(2026-06-08).** 살아있는 문서가 아니라 감사/핸드오프
+> 기록이며, 인용한 커밋·라인·모델 상태는 이후 변경되었을 수 있다. 항구적 결정은
+> [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md)와
+> [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md)에 있으며, 이 파일은 그 문서들이
+> 인용하는 실측 근거로만 보존한다. `scripts/install.zsh`로 배포되지 않는다.
+
 대상: 다음 Codex 세션. 이 문서는 *권고(recommendation)*이며, 우선순위·구체 액션·완성 기준을 담는다.
 근거: 직전 model↔harness 상호작용 감사(실측 ~$0.02) + gateway 클램프 라이브 검증.
-관련 문서: `docs/MODEL_HARNESS_CONTEXT_AUDIT_FOR_CODEX.md`(C1–C7 상세), `docs/CLAUDE_DYNAMIC_WORKFLOW_AUDIT_FOR_CODEX.md`(패키징 감사).
+관련 문서: `docs/MODEL_HARNESS_CONTEXT_AUDIT_FOR_CODEX.md`(C1–C7 상세).
 
 ---
 

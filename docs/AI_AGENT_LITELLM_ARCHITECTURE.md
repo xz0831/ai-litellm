@@ -620,7 +620,7 @@ ai-litellm key status
 - M5: 부분 구현. context capability는 descriptor data block으로 옮겼고, provider reasoning set/unset은 단일 mutation 함수와 단일 atomic write로 합쳤다. harness reasoning mutation은 adapter별 allowed/default/build 규칙을 한 Node table로 모았다. 더 큰 registry-normalization core 추출은 Ruby/Python/Node 경계를 동시에 흔드는 리팩터라 이번에는 보류한다.
 - M6: 구현. `reasoning matrix`가 read/observability 정본이고, `model reasoning [model]` table alias는 deprecated 경고 후 위임한다. `model reasoning set|unset|probe`는 mutation/probe surface로 남긴다.
 - LOW: 구현. route info는 `/model/info` curl 실패를 먼저 잡아 rc=1을 반환한다. reasoning observation lookup은 현재 backend와 다른 stale record를 skip한다. native Codex `gpt-5.5`/declared budget literal은 context matrix 내부 상수로 이름 붙였다.
-- leanness: 구현/보류 혼합. 내부 dead function `ai_litellm_runtime_kind_supported`는 삭제했다. `_claude_litellm_source_env`는 로컬 호출자는 없지만 공개 호환 shim 묶음이라 삭제 보류. cross-language `provider_default` 통합과 matrix/doctor registry 재파싱 제거는 가치가 있으나 현 변경보다 blast radius가 커서 보류.
+- leanness: 구현/보류 혼합. 내부 dead function `ai_litellm_runtime_kind_supported`는 삭제했다. `_claude_litellm_*` 공개 호환 shim 묶음(로컬 호출자 0)과 미사용 `ai_litellm_harness_adapter_names`는 Tier-3 leanness 정리에서 삭제했다. cross-language `provider_default` 통합과 matrix/doctor registry 재파싱 제거는 가치가 있으나 현 변경보다 blast radius가 커서 보류.
 - F3 context observation cache: 구현. `context-observations.json` seed/cache를 도입했고 `context matrix`가 observed lower-bound를 `>=N`으로 표시한다. Claude opus→DeepSeek `>=211580`과 GLM `>=204800` 관측은 폐기하지 않고 인코딩했으며, enforcement는 provider/configured cap을 보수적으로 유지한다.
 
 ## 2026-06-08 모델/하니스 context 감사 결정 로그

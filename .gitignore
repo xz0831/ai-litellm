@@ -24,5 +24,10 @@ claude-config/
 codex-home/
 opencode-dir/node_modules/
 
+# Un-rendered install placeholder. Running a bin/ wrapper from a checkout
+# (instead of the installed package) mkdir's literal __FABRIC_HOME__ paths
+# under cwd; ignore the artifact so it never surfaces in git or gets committed.
+__FABRIC_HOME__/
+
 # Local scratch.
 .tmp/

@@ -615,16 +615,6 @@ ai_litellm_harness_names() {
   done
 }
 
-ai_litellm_harness_adapter_names() {
-  local schema="$AI_LITELLM_HARNESSES_DIR/schema.json"
-  [[ -f "$schema" ]] || return 1
-  node -e '
-const fs = require("fs");
-const schema = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-for (const adapter of schema.properties?.adapter?.enum || []) console.log(adapter);
-' "$schema"
-}
-
 ai_litellm_harness_validate() {
   local harness="$1"
   local descriptor adapter schema
@@ -5748,21 +5738,6 @@ ai_litellm() {
       ;;
   esac
 }
-
-# Backward-compatible shared helper names.
-_claude_litellm_source_env() { return 0; }
-_claude_litellm_env_value() { ai_litellm_env_value "$@"; }
-_claude_litellm_keychain_value() { ai_litellm_keychain_value "$@"; }
-_claude_litellm_openrouter_key() { ai_litellm_openrouter_key "$@"; }
-_claude_litellm_model_names() { ai_litellm_model_names "$@"; }
-_claude_litellm_model_exists() { ai_litellm_model_exists "$@"; }
-_claude_litellm_model_backend() { ai_litellm_model_backend "$@"; }
-_claude_litellm_master_key() { ai_litellm_master_key "$@"; }
-_claude_litellm_host() { ai_litellm_host "$@"; }
-_claude_litellm_port() { ai_litellm_port "$@"; }
-_claude_litellm_base_url() { ai_litellm_base_url "$@"; }
-_claude_litellm_health() { ai_litellm_health "$@"; }
-_claude_litellm_pid_running() { ai_litellm_pid_running "$@"; }
 
 start-litellm() { ai_litellm_start "$@"; }
 stop-litellm() { ai_litellm_stop "$@"; }
