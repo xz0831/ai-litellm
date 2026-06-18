@@ -36,14 +36,14 @@ x-limits:
     x_output_source: openrouter.top_provider.max_completion_tokens
     x_reasoning_confidence: provider
     x_reasoning_source: openrouter.supported_parameters
-  glm51: &glm51
-    max_input_tokens: 202752
-    max_output_tokens: 131072
+  glm52: &glm52
+    max_input_tokens: 1048576
+    max_output_tokens: 65536
     supports_reasoning: true
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
-    x_output_confidence: owned-policy
-    x_output_source: provider-omits-max-completion-tokens; conservative-local-ceiling-pending-observation
+    x_output_confidence: provider
+    x_output_source: openrouter.top_provider.max_completion_tokens
     x_reasoning_confidence: provider
     x_reasoning_source: openrouter.supported_parameters
   gemma_local: &gemma_local
@@ -84,42 +84,40 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY
     model_info: *kimi_k26
 
-  - model_name: GLM-5.1-openrouter
+  - model_name: GLM-5.2-openrouter
     litellm_params:
-      model: openrouter/z-ai/glm-5.1
+      model: openrouter/z-ai/glm-5.2
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *glm51
+    model_info: *glm52
 
   # Codex-native facade names. Keep these aligned with Codex's /model UI.
   - model_name: gpt-5.5
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/z-ai/glm-5.2
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *deepseek_v4_pro
-
-  - model_name: gpt-5.3-codex
-    litellm_params:
-      model: openrouter/z-ai/glm-5.1
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *glm51
+    model_info: *glm52
 
   - model_name: gpt-5.4
     litellm_params:
-      model: openrouter/moonshotai/kimi-k2.6
+      model: openrouter/deepseek/deepseek-v4-pro
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *kimi_k26
-
-  - model_name: gpt-5.2
-    litellm_params:
-      model: openrouter/z-ai/glm-5.1
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *glm51
+    model_info: *deepseek_v4_pro
 
   - model_name: gpt-5.4-mini
     litellm_params:
       model: openrouter/moonshotai/kimi-k2.6
       api_key: os.environ/OPENROUTER_API_KEY
     model_info: *kimi_k26
+
+  # Codex local-backed facade: the bundled-catalog slug gpt-5.3-codex-spark
+  # routes to the local oMLX gemma. Local route (api_key: none) -> exempt from
+  # codex catalog window reduction; haiku-grade conservative caps via gemma anchor.
+  - model_name: gpt-5.3-codex-spark
+    litellm_params:
+      model: openai/gemma4-12b
+      api_base: http://127.0.0.1:8000/v1
+      api_key: none
+    model_info: *gemma_local
 
   - model_name: codex-auto-review
     litellm_params:

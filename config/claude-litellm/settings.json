@@ -4,24 +4,28 @@
   "directDefault": "opus",
   "proxyDefault": "opus",
   "directAliases": {
+    "fable": "z-ai/glm-5.2",
     "opus": "deepseek/deepseek-v4-pro",
     "sonnet": "moonshotai/kimi-k2.6",
-    "haiku": "z-ai/glm-5.1"
+    "haiku": "z-ai/glm-5.2"
   },
   "directDisplayNames": {
+    "fable": "GLM-5.2 (openrouter)",
     "opus": "DeepSeek-V4-Pro (openrouter)",
     "sonnet": "Kimi-K2.6 (openrouter)",
-    "haiku": "GLM-5.1 (openrouter)"
+    "haiku": "GLM-5.2 (openrouter)"
   },
   "subagentModel": "deepseek/deepseek-v4-pro",
   "aliases": {
+    "fable": "GLM-5.2-openrouter",
     "opus": "DeepSeek-V4-Pro-openrouter",
     "sonnet": "Kimi-K2.6-openrouter",
-    "haiku": "Qwen3.6-27B-omlx"
+    "haiku": "Gemma4-12B-omlx"
   },
   "displayNames": {
+    "fable": "GLM-5.2 (openrouter)",
     "opus": "DeepSeek-V4-Pro (openrouter)",
     "sonnet": "Kimi-K2.6 (openrouter)",
-    "haiku": "Qwen3.6-27B (omlx)"
+    "haiku": "Gemma4-12B (omlx)"
   }
 }
