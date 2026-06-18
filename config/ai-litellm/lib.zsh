@@ -6112,6 +6112,7 @@ Usage: ai-litellm <group> <verb> [args]
   Sync:     ai-litellm sync          Regenerate derived configs + reload proxy from the single source
   Delete:   ai-litellm uninstall     Remove package directory and global shims
   Caps:     ai-litellm capabilities  Proxy + runtime capability summary
+  Dash:     ai-litellm dash          Launch the fabric control-plane TUI (or run: fabric)
 
 Flat forms (start, stop, status, route-info, harnesses, launch, ...) still work but
 are deprecated in favor of the groups above.
@@ -6136,6 +6137,18 @@ ai_litellm() {
     sync|--sync)  ai_litellm_sync "$@" ;;
     uninstall)    ai_litellm_uninstall "$@" ;;
     capabilities|--capabilities) ai_litellm_capabilities ;;
+    dash)
+      shift
+      local fabric_py="$AI_LITELLM_STATE_HOME/dash-venv/bin/python"
+      if [[ ! -x "$fabric_py" ]]; then
+        echo "fabric: dashboard venv missing at $AI_LITELLM_STATE_HOME/dash-venv" >&2
+        echo "  create it: python3 -m venv \"$AI_LITELLM_STATE_HOME/dash-venv\" && \"$AI_LITELLM_STATE_HOME/dash-venv/bin/pip\" install textual" >&2
+        echo "  (or re-run scripts/install.zsh)" >&2
+        return 1
+      fi
+      PYTHONPATH="$AI_LITELLM_CONFIG_HOME/ai-litellm${PYTHONPATH:+:$PYTHONPATH}" \
+        "$fabric_py" -m fabric_dash "$@"
+      ;;
 
     # ── Deprecated flat aliases (still work; warn + delegate) ──
     start|--start)               ai_litellm_deprecated start "proxy start"; ai_litellm_start ;;

@@ -1,0 +1,25 @@
+#!/usr/bin/env zsh
+
+# lib.zsh shells out to node for all JSON/env reads; on nvm-only machines a
+# PATH-minimal context (launchd, cron) has no node without this bootstrap.
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [[ -s "$NVM_DIR/nvm.sh" ]]; then
+  source "$NVM_DIR/nvm.sh"
+fi
+
+_ai_litellm_resolve_fabric_home() {
+  if [[ -n "${AI_LITELLM_FABRIC_HOME:-}" ]]; then
+    print -r -- "$AI_LITELLM_FABRIC_HOME"
+    return
+  fi
+  local script_dir="${0:A:h}"
+  if [[ -f "$script_dir/../config/ai-litellm/lib.zsh" ]]; then
+    print -r -- "${script_dir:h}"
+    return
+  fi
+  print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm-fabric"
+}
+
+export AI_LITELLM_FABRIC_HOME="$(_ai_litellm_resolve_fabric_home)"
+
+exec "$AI_LITELLM_FABRIC_HOME/bin/ai-litellm" dash "$@"
