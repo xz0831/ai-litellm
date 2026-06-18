@@ -123,6 +123,28 @@ ai_litellm_runtime_routes_write omlx 0 "Qwen3.6-Test-27B" "PlainLocal" >/dev/nul
 grep -A8 "model_name: Qwen3.6-Test-27B-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_input_tokens: 131072"
 grep -A8 "model_name: Qwen3.6-Test-27B-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_output_tokens: 16384"
 grep -A8 "model_name: PlainLocal-omlx" "$AI_LITELLM_CONFIG" | grep -q "max_input_tokens: 8192"
+# ── --json contract: proxy status ────────────────────────────────────────────
+json_check() {
+  local label="$1"; shift
+  local out
+  out="$("$@" 2>/dev/null)" || { echo "FAIL($label): nonzero exit"; exit 1; }
+  print -r -- "$out" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{try{JSON.parse(s)}catch(e){console.error(\"invalid JSON\");process.exit(1)}})" \
+    || { echo "FAIL($label): invalid JSON"; exit 1; }
+}
+assert_json_key() {
+  local label="$1" json="$2" key="$3"
+  print -r -- "$json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);if(!(process.argv[1] in o)){console.error(\"missing key\");process.exit(1)}})" "$key" \
+    || { echo "FAIL($label): missing key $key"; exit 1; }
+}
+ps_json="$("$HOME/.local/bin/ai-litellm" proxy status --json 2>/dev/null)"
+json_check "proxy status --json" "$HOME/.local/bin/ai-litellm" proxy status --json
+for k in config settings baseUrl health configCurrency log; do
+  assert_json_key "proxy status --json" "$ps_json" "$k"
+done
+# default output unchanged: still human text, no leading brace
+ps_text="$("$HOME/.local/bin/ai-litellm" proxy status 2>/dev/null)"
+[[ "$ps_text" != \{* ]] || { echo "FAIL: default proxy status became JSON"; exit 1; }
+echo "ok: proxy status --json"
 # litellmParamsOverrides: a glob-matched discovered route gets extra litellm_params
 # (e.g. thinking-off via extra_body) injected; non-matching routes do NOT. Tested
 # via a temp settings overlay so the shipped empty {} stays behavior-preserving.

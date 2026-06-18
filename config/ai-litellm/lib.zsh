@@ -89,6 +89,25 @@ ai_litellm_json() {
   ai_litellm_json_file "$AI_LITELLM_SETTINGS" "$1"
 }
 
+# Serialize key/value pairs to one line of JSON. Args alternate KEY VALUE …;
+# a VALUE of the form @num:<n> emits a JSON number, @bool:<true|false> a bool,
+# @null emits null, otherwise a JSON string. Output formatter only — never
+# computes state. Always exits 0 with valid JSON.
+ai_litellm_emit_json() {
+  node -e '
+const a = process.argv.slice(1);
+const o = {};
+for (let i = 0; i + 1 < a.length; i += 2) {
+  const k = a[i]; let v = a[i + 1];
+  if (v === "@null") o[k] = null;
+  else if (v.startsWith("@num:")) { const n = Number(v.slice(5)); o[k] = Number.isFinite(n) ? n : null; }
+  else if (v.startsWith("@bool:")) o[k] = v.slice(6) === "true";
+  else o[k] = v;
+}
+process.stdout.write(JSON.stringify(o));
+' "$@"
+}
+
 ai_litellm_env_value() {
   local key="$1"
   local env_file
@@ -2131,6 +2150,37 @@ ai_litellm_status() {
     echo "Lock:     none"
   fi
   echo "Log:      $(ai_litellm_active_log_file)"
+}
+
+ai_litellm_status_json() {
+  local pid="@null" pidfile="@null" health="unreachable" currency log lock="@null"
+  if ai_litellm_pid_running; then
+    pid="@num:$(ai_litellm_active_pid)"
+    pidfile="$(ai_litellm_active_pid_file)"
+  fi
+  ai_litellm_health && health="ok"
+  if ai_litellm_pid_running; then
+    ai_litellm_proxy_config_current
+    case $? in
+      0) currency="current" ;;
+      2) currency="unknown" ;;
+      *) currency="stale" ;;
+    esac
+  else
+    currency="unknown-not-running"
+  fi
+  [[ -d "$AI_LITELLM_LOCK_DIR" ]] && lock="$AI_LITELLM_LOCK_DIR"
+  log="$(ai_litellm_active_log_file)"
+  ai_litellm_emit_json \
+    config "$AI_LITELLM_CONFIG" \
+    settings "$AI_LITELLM_SETTINGS" \
+    baseUrl "$(ai_litellm_base_url)" \
+    pid "$pid" \
+    pidFile "$pidfile" \
+    health "$health" \
+    configCurrency "$currency" \
+    lock "$lock" \
+    log "$log"
 }
 
 ai_litellm_list() {
@@ -5633,7 +5683,9 @@ ai_litellm_deprecated() {
 ai_litellm_cmd_proxy() {
   local verb="$1"; [[ $# -gt 0 ]] && shift
   case "$verb" in
-    status|"") ai_litellm_status ;;
+    status|"")
+      if [[ "${1:-}" == "--json" ]]; then ai_litellm_status_json; else ai_litellm_status; fi
+      ;;
     start)     ai_litellm_start ;;
     stop)      ai_litellm_stop ;;
     restart)   ai_litellm_restart ;;
