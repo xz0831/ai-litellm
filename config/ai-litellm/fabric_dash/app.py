@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import Header, Footer, Tree, Static, DataTable
+from textual.widgets import Header, Footer, Tree, Static
 from .client import FabricClient
 
 CONCEPTS = [
@@ -70,9 +70,9 @@ class FabricApp(App):
             content.update("\n".join(lines))
         elif node_id == "models":
             rows = self.client.model_limits() or self.client.model_list()
-            content.update(_table_text(rows))
+            content.update(_table_text(rows) or "no models / routes (is the proxy synced?)")
         elif node_id == "harnesses":
-            content.update(_table_text(self.client.harness_list()))
+            content.update(_table_text(self.client.harness_list()) or "no harnesses")
         elif node_id == "runtimes":
             content.update(_table_text(self.client.runtime_status()) or "no runtimes")
         elif node_id == "budget":

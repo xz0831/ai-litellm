@@ -163,6 +163,40 @@ model_list:
           enable_thinking: false
     model_info: *qwen36_27b_local
 
+# BEGIN ai-litellm discovered local routes
+# Managed by `ai-litellm sync`; generated from runtimes.omlx /v1/models.
+  - model_name: Qwen3.6-Test-27B-omlx
+    litellm_params:
+      model: openai/Qwen3.6-Test-27B
+      api_base: http://127.0.0.1:8000/v1
+      api_key: none
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 16384
+      supports_reasoning: false
+      x_input_confidence: owned-policy
+      x_input_source: native 262144 (model config.json); owned-policy local throughput cap
+      x_output_confidence: owned-policy
+      x_output_source: owned-policy local output cap
+      x_reasoning_confidence: owned-policy
+      x_reasoning_source: local-runtime-no-reasoning-routing
+  - model_name: PlainLocal-omlx
+    litellm_params:
+      model: openai/PlainLocal
+      api_base: http://127.0.0.1:8000/v1
+      api_key: none
+    model_info:
+      max_input_tokens: 8192
+      max_output_tokens: 4096
+      supports_reasoning: false
+      x_input_confidence: owned-policy
+      x_input_source: quality-conservative-local-policy; runtime-specific
+      x_output_confidence: owned-policy
+      x_output_source: quality-conservative-local-policy
+      x_reasoning_confidence: owned-policy
+      x_reasoning_source: local-runtime-no-reasoning-routing
+# END ai-litellm discovered local routes
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
