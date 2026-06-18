@@ -2200,6 +2200,20 @@ end
 ' "$AI_LITELLM_CONFIG"
 }
 
+ai_litellm_list_json() {
+  ai_litellm_ruby -ryaml -rjson -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue (YAML.load_file(ARGV[0]) rescue nil))
+rows = []
+Array(config && config["model_list"]).each do |entry|
+  name = entry["model_name"]
+  next unless name
+  backend = entry.dig("litellm_params", "model")
+  rows << {"name" => name, "backend" => (backend || name)}
+end
+print JSON.generate(rows)
+' "$AI_LITELLM_CONFIG" 2>/dev/null || printf "[]"
+}
+
 ai_litellm_route_info() {
   if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
     echo "Missing curl or jq." >&2
@@ -3269,6 +3283,33 @@ Array(config["model_list"]).each do |e|
     (mi["x_output_confidence"] || "local-config").to_s)
 end
 ' "$AI_LITELLM_CONFIG" "$filter"
+}
+
+ai_litellm_model_limits_json() {
+  local filter="${1:-}"
+  [[ -z "$filter" ]] || filter="$(ai_litellm_model_resolve "$filter" 2>/dev/null || printf '%s\n' "$filter")"
+  ai_litellm_ruby -ryaml -rjson -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue (YAML.load_file(ARGV[0]) rescue nil))
+filter = ARGV[1]
+rows = []
+Array(config && config["model_list"]).each do |entry|
+  name = entry["model_name"]
+  next unless name
+  next if filter && !filter.empty? && name != filter
+  mi = entry["model_info"] || {}
+  ctx = mi["max_input_tokens"]
+  out = mi["max_output_tokens"]
+  eff = (ctx && out) ? (ctx - out) : ctx
+  rows << {
+    "model" => name,
+    "context" => ctx,
+    "output" => out,
+    "effectiveInput" => eff,
+    "sources" => {"context" => mi["x_input_source"], "output" => mi["x_output_source"]}
+  }
+end
+print JSON.generate(rows)
+' "$AI_LITELLM_CONFIG" "$filter" 2>/dev/null || printf "[]"
 }
 
 ai_litellm_model_refresh_capabilities() {
@@ -5725,9 +5766,15 @@ ai_litellm_cmd_runtime() {
 ai_litellm_cmd_model() {
   local verb="$1"; [[ $# -gt 0 ]] && shift
   case "$verb" in
-    list|"")      ai_litellm_list ;;
+    list|"")
+      if [[ "${1:-}" == "--json" ]]; then ai_litellm_list_json; else ai_litellm_list; fi
+      ;;
     info)         ai_litellm_model_info "$@" ;;
-    limits)       ai_litellm_limits_table "$@" ;;
+    limits)
+      if [[ "${1:-}" == "--json" ]]; then shift; ai_litellm_model_limits_json "$@"
+      elif [[ "${2:-}" == "--json" ]]; then ai_litellm_model_limits_json "$1"
+      else ai_litellm_limits_table "$@"; fi
+      ;;
     refresh-capabilities) ai_litellm_model_refresh_capabilities "$@" ;;
     reasoning)
       case "${1:-}" in

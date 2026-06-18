@@ -145,6 +145,13 @@ done
 ps_text="$("$HOME/.local/bin/ai-litellm" proxy status 2>/dev/null)"
 [[ "$ps_text" != \{* ]] || { echo "FAIL: default proxy status became JSON"; exit 1; }
 echo "ok: proxy status --json"
+# ── --json contract: model list + model limits ────────────────────────────────
+ml_json="$("$HOME/.local/bin/ai-litellm" model list --json 2>/dev/null)"
+json_check "model list --json" "$HOME/.local/bin/ai-litellm" model list --json
+print -r -- "$ml_json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);if(!Array.isArray(a)||a.length===0){console.error(\"not a non-empty array\");process.exit(1)}if(!(\"name\" in a[0])||!(\"backend\" in a[0])){console.error(\"missing name/backend\");process.exit(1)}})" \
+  || { echo "FAIL: model list --json shape"; exit 1; }
+json_check "model limits --json" "$HOME/.local/bin/ai-litellm" model limits --json
+echo "ok: model list/limits --json"
 # litellmParamsOverrides: a glob-matched discovered route gets extra litellm_params
 # (e.g. thinking-off via extra_body) injected; non-matching routes do NOT. Tested
 # via a temp settings overlay so the shipped empty {} stays behavior-preserving.
