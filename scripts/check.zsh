@@ -49,6 +49,17 @@ test -f "$HOME/.local/share/ai-litellm-fabric/config/ai_litellm_callbacks/output
 test -x "$HOME/.local/share/ai-litellm-fabric/scripts/uninstall.zsh"
 test -x "$HOME/.local/share/ai-litellm-fabric/bin/claude-litellm"
 test -x "$HOME/.local/bin/claude-litellm"
+[[ -x "$HOME/.local/bin/fabric" ]] || { echo "FAIL: fabric shim missing"; exit 1; }
+# module import check using the dash venv installed by install.zsh
+tmp_venv="$HOME/.local/share/ai-litellm-fabric/state/dash-venv"
+tmp_prefix="$HOME/.local/share/ai-litellm-fabric"
+if [[ -x "$tmp_venv/bin/python" ]] && "$tmp_venv/bin/python" -c "import textual" 2>/dev/null; then
+  PYTHONPATH="$tmp_prefix/config/ai-litellm" "$tmp_venv/bin/python" -m fabric_dash --help >/dev/null 2>&1 \
+    || { echo "FAIL: fabric_dash --help failed under dash venv"; exit 1; }
+  echo "ok: fabric shim + module (venv)"
+else
+  echo "note: skipping fabric_dash module check (dash venv/textual unavailable in check env)" >&2
+fi
 "$HOME/.local/bin/ai-litellm" --help >/dev/null
 ! grep -R "__HOME__\\|__FABRIC_HOME__" "$prefix/config" "$prefix/docs" >/dev/null
 grep -q "AI_LITELLM_FABRIC_HOME=" "$HOME/.local/bin/ai-litellm"

@@ -306,7 +306,7 @@ for file in \
   require_file "$file"
 done
 
-for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status; do
+for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status fabric; do
   require_file "$repo_root/bin/$script"
 done
 
@@ -357,6 +357,26 @@ for descriptor in "$repo_root"/config/ai-litellm/harnesses/*.json(N); do
   install_rendered "$descriptor" "$prefix/config/ai-litellm/harnesses/${descriptor:t}"
 done
 
+for pyfile in "$repo_root"/config/ai-litellm/fabric_dash/**/*.py(N); do
+  rel="${pyfile#$repo_root/config/ai-litellm/}"
+  [[ "$rel" == */tests/* ]] && continue
+  install_rendered "$pyfile" "$prefix/config/ai-litellm/$rel"
+done
+install_rendered "$repo_root/config/ai-litellm/fabric_dash/app.tcss" "$prefix/config/ai-litellm/fabric_dash/app.tcss"
+
+ensure_dash_venv() {
+  local venv="$prefix/state/dash-venv"
+  if (( dry_run )); then log "dry-run create dash venv at $venv + pip install textual"; return 0; fi
+  command -v python3 >/dev/null 2>&1 || { echo "note: python3 not found — skipping fabric dashboard venv." >&2; return 0; }
+  if [[ ! -x "$venv/bin/python" ]]; then
+    python3 -m venv "$venv" 2>/dev/null || { echo "note: could not create dashboard venv ($venv); 'fabric' will be unavailable until created." >&2; return 0; }
+  fi
+  "$venv/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1
+  "$venv/bin/python" -m pip install --quiet textual >/dev/null 2>&1 \
+    || echo "note: failed to install textual into $venv; run \"$venv/bin/pip install textual\" to enable 'fabric'." >&2
+}
+ensure_dash_venv
+
 install_rendered "$repo_root/config/claude-litellm/settings.json" "$prefix/config/claude-litellm/settings.json"
 install_rendered "$repo_root/config/claude-litellm/shell.zsh" "$prefix/config/claude-litellm/shell.zsh"
 
@@ -366,7 +386,7 @@ install_rendered "$repo_root/config/codex-litellm/shell.zsh" "$prefix/config/cod
 install_rendered "$repo_root/docs/AI_AGENT_LITELLM_ARCHITECTURE.md" "$prefix/docs/AI_AGENT_LITELLM_ARCHITECTURE.md"
 install_executable "$repo_root/scripts/uninstall.zsh" "$prefix/scripts/uninstall.zsh"
 
-for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status; do
+for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status fabric; do
   install_executable "$repo_root/bin/$script" "$prefix/bin/$script"
   install_shim "$script"
 done

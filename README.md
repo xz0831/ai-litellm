@@ -327,6 +327,18 @@ ai-litellm context doctor
 ai-litellm proxy doctor
 ```
 
+## Dashboard
+
+`fabric` is a read-only control-plane TUI over the `ai-litellm` commands:
+
+```zsh
+fabric            # or: ai-litellm dash
+```
+
+It shows proxy health, config currency, models/routes, runtimes, budget
+policy, and keys in one screen. Requires Textual (`python3 -m pip install
+textual`); the rest of the package works without it.
+
 ## Machine-readable output
 
 Read-only commands accept `--json` for scripting and the `fabric` dashboard:

@@ -158,7 +158,7 @@ assert_fabric_prefix_safe() {
 
 assert_fabric_prefix_safe
 
-for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status; do
+for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status fabric; do
   run rm -f "$bin_dir/$script"
   for backup in "$bin_dir/$script".bak.*(N); do
     run rm -f "$backup"
