@@ -147,7 +147,9 @@ class FabricApp(App):
         else:
             # Make the dependency discoverable: 'l' is meaningless until a
             # harness is picked, so point the newcomer at the Harnesses panel.
-            launch = "[dim]launch ->[/] [yellow][open Harnesses][/]"
+            # Escape the brackets (\[) so Rich renders them literally instead of
+            # parsing "[open Harnesses]" as a markup tag and silently dropping it.
+            launch = "[dim]launch ->[/] [yellow]\\[open Harnesses][/]"
         self.query_one("#status", Static).update(
             f"{dot} proxy: {health}   config: {badge}   {launch}   [dim]{url}[/]"
         )

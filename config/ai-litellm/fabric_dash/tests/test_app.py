@@ -254,8 +254,13 @@ async def test_status_bar_points_newcomer_to_harnesses_when_unselected():
         assert app._selected_harness is None
         status = app.query_one("#status")
         # Amber, actionable hint rather than a passive "select a harness".
-        plain = status.content.plain if hasattr(status.content, "plain") else str(status.content)
-        assert "[open Harnesses]" in plain
+        # Render the markup the way Textual does — a raw-markup assertion gives a
+        # FALSE pass when "[open Harnesses]" is parsed as a tag and dropped, while
+        # the user sees nothing. from_markup renders the visible text.
+        from rich.text import Text
+        raw = status.content
+        rendered = raw.plain if hasattr(raw, "plain") else Text.from_markup(str(raw)).plain
+        assert "[open Harnesses]" in rendered
 
 
 @pytest.mark.asyncio
