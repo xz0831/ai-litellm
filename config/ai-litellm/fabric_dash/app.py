@@ -1,12 +1,13 @@
 """fabric — read-only control-plane TUI over ai-litellm."""
 from __future__ import annotations
 from pathlib import Path
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Header, Footer, Tree, Static, RichLog, DataTable
 from textual import work
 from .client import FabricClient
-from .safety import ACTIONS, SAFE
+from .safety import ACTIONS
 from .actions import ActionRunner
 from .modal import ConfirmModal
 
@@ -40,6 +41,27 @@ def _label(key: str) -> str:
     return COLUMN_LABELS.get(key, key[:1].upper() + key[1:])
 
 
+# Status color system (mirrors app.tcss .ok/.warn/.bad → $success/$warning/$error).
+# Load-bearing: readiness columns must signal danger before a billable launch.
+_OK = "green"
+_BAD = "red"
+# Columns whose truthiness is a readiness signal: False → red, True → green.
+_BOOL_READY_KEYS = {"valid", "cliInstalled"}
+# Key-status sources that mean "this key is not usable" → red.
+_BAD_SOURCES = {"missing", "unset", "none", ""}
+
+
+def _cell(key: str, value) -> Text:
+    """Render one table cell, coloring readiness signals per the status system."""
+    if key in _BOOL_READY_KEYS or isinstance(value, bool):
+        truthy = value is True or str(value).strip().lower() in ("true", "yes", "1")
+        return Text("✓" if truthy else "✗", style=_OK if truthy else _BAD)
+    text = "" if value is None else str(value)
+    if key == "source" and text.strip().lower() in _BAD_SOURCES:
+        return Text(text, style=_BAD)
+    return Text(text)
+
+
 class FabricApp(App):
     CSS_PATH = Path(__file__).parent / "app.tcss"
     TITLE = "ai-litellm fabric"
@@ -65,8 +87,11 @@ class FabricApp(App):
                 tree.root.add_leaf(label, data=node_id)
             yield tree
             yield Static("", id="content")
-            table: DataTable = DataTable(id="harness-table", cursor_type="row", zebra_stripes=True)
-            table.display = False  # only shown on the Harnesses panel
+            # One reusable table for every wide tabular view (harnesses, models,
+            # runtimes, budget). DataTable sizes columns to content and scrolls,
+            # so rows never wrap the way fixed-width text columns did.
+            table: DataTable = DataTable(id="data-table", cursor_type="row", zebra_stripes=True)
+            table.display = False  # shown only on tabular panels
             yield table
         yield RichLog(id="results", highlight=False, markup=True)
         yield Footer()
@@ -99,57 +124,87 @@ class FabricApp(App):
             f"{dot} proxy: {health}   config: {badge}   {launch}   [dim]{url}[/]"
         )
 
+    # Panels that render as a wide table; empty-state message shown otherwise.
+    _EMPTY = {
+        "harnesses": "no harnesses",
+        "models": "no models / routes (is the proxy synced?)",
+        "runtimes": "no runtimes",
+        "budget": "no reasoning matrix",
+    }
+
     def show_panel(self, node_id: str) -> None:
         content = self.query_one("#content", Static)
-        table = self.query_one("#harness-table", DataTable)
-        # Default: text panel visible, harness table hidden.
+        table = self.query_one("#data-table", DataTable)
+        # Default: text panel visible, table hidden.
         content.display = True
         table.display = False
         if node_id == "proxy":
             s = self.client.proxy_status()
             lines = [f"{_label(k)}: {v}" for k, v in s.items()] or ["proxy not running — start it"]
             content.update("\n".join(lines))
-        elif node_id == "harnesses":
-            self._fill_harness_table(table)
-            if table.row_count:
+        elif node_id == "keys":
+            content.update(self._keys_text() or "no keys")
+        elif node_id in self._EMPTY:
+            rows = self._panel_rows(node_id)
+            if rows:
+                self._fill_table(table, rows, select=(node_id == "harnesses"))
                 content.display = False
                 table.display = True
             else:
-                content.update("no harnesses")
-        elif node_id == "models":
-            rows = self.client.model_limits() or self.client.model_list()
-            content.update(_table_text(rows) or "no models / routes (is the proxy synced?)")
-        elif node_id == "runtimes":
-            content.update(_table_text(self.client.runtime_status()) or "no runtimes")
-        elif node_id == "budget":
-            content.update(_table_text(self.client.reasoning_matrix()) or "no reasoning matrix")
-        elif node_id == "keys":
-            k = self.client.key_status()
-            content.update(
-                "\n".join(f"{name}: {info.get('source','?')}" for name, info in k.items()) or "no keys"
-            )
+                if node_id == "harnesses":
+                    self._selected_harness = None
+                content.update(self._EMPTY[node_id])
         else:
             content.update("")
 
-    def _fill_harness_table(self, table: DataTable) -> None:
-        """Render harnesses into a selectable DataTable; first row sets the launch target."""
+    def _panel_rows(self, node_id: str) -> list:
+        if node_id == "harnesses":
+            return self.client.harness_list()
+        if node_id == "models":
+            return self.client.model_limits() or self.client.model_list()
+        if node_id == "runtimes":
+            return self.client.runtime_status()
+        if node_id == "budget":
+            return self.client.reasoning_matrix()
+        return []
+
+    def _keys_text(self) -> Text:
+        """Key status as colored lines: missing/unset keys render red (load-bearing)."""
+        out = Text()
+        for i, (name, info) in enumerate(self.client.key_status().items()):
+            src = str(info.get("source", "?"))
+            bad = src.strip().lower() in _BAD_SOURCES
+            if i:
+                out.append("\n")
+            out.append(f"{name}: ")
+            out.append(src, style=_BAD if bad else _OK)
+        return out
+
+    def _fill_table(self, table: DataTable, rows: list, *, select: bool) -> None:
+        """Render rows into the shared DataTable with status-colored cells.
+
+        When ``select`` is set, the first row seeds the launch target so 'l'
+        always has a real harness to hand off to.
+        """
         table.clear(columns=True)
-        rows = self.client.harness_list()
         if not rows:
-            self._selected_harness = None
             return
         cols = list(rows[0].keys())
         for c in cols:
             table.add_column(_label(c), key=c)
         for r in rows:
-            table.add_row(*[str(r.get(c, "")) for c in cols], key=str(r.get("name", "")))
-        # Default the launch target to the first harness so 'l' has a real target.
-        if self._selected_harness is None and rows:
+            table.add_row(*[_cell(c, r.get(c)) for c in cols], key=str(r.get("name", "")))
+        if select and self._selected_harness is None:
             self._selected_harness = str(rows[0].get("name", "")) or None
             self.refresh_status()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.data_table.id == "harness-table" and event.row_key is not None:
+        # Only the Harnesses panel drives the launch target.
+        if (
+            event.data_table.id == "data-table"
+            and self._selected == "harnesses"
+            and event.row_key is not None
+        ):
             self._selected_harness = str(event.row_key.value)
             self.refresh_status()
 
@@ -205,14 +260,3 @@ class FabricApp(App):
         if not ok:
             return
         self.exit(result=("launch", [harness]))
-
-
-def _table_text(rows: list) -> str:
-    if not rows:
-        return ""
-    cols = list(rows[0].keys())
-    head = "  ".join(f"{_label(c):<18}" for c in cols)
-    rule = "  ".join("-" * 18 for _ in cols)
-    body = "\n".join("  ".join(f"{str(r.get(c, '')):<18}" for c in cols) for r in rows)
-    # Bold header + dim rule give the table a scannable hierarchy in a mono panel.
-    return f"[b]{head}[/b]\n[dim]{rule}[/dim]\n{body}"

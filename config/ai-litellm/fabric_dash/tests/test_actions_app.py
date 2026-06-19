@@ -70,6 +70,32 @@ async def test_restart_modal_defaults_focus_to_cancel():
 
 
 @pytest.mark.asyncio
+async def test_destructive_modal_renders_and_is_cancel_first():
+    # No destructive action is wired into ACTIONS, but the modal must still
+    # render a destructive-grade gate Cancel-first if one is ever pushed.
+    from fabric_dash.app import FabricApp
+    from fabric_dash.modal import ConfirmModal
+    results = []
+    app = FabricApp(client=_client(), runner=ActionRunner(spawn=lambda a: (0, [])))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(
+            ConfirmModal("permanent: removes installed harness.", title="Confirm uninstall", grade="destructive"),
+            results.append,
+        )
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfirmModal)
+        # Cancel-first / Cancel-focused, and no dead .destructive class on the box.
+        assert app.focused is not None and app.focused.id == "confirm-no"
+        box = screen.query_one("#confirm-box")
+        assert not box.has_class("destructive")
+        await pilot.press("enter")          # Enter on default Cancel -> dismiss(False)
+        await pilot.pause()
+    assert results == [False]
+
+
+@pytest.mark.asyncio
 async def test_safe_action_runs_without_modal():
     calls = []
     from fabric_dash.app import FabricApp

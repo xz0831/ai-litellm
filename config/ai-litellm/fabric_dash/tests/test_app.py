@@ -34,7 +34,7 @@ async def test_harness_panel_sets_launch_target():
         # Opening the panel populates the DataTable and sets the launch target
         # to the first harness — 'l' now has a real target, not a hardcoded one.
         from textual.widgets import DataTable
-        table = app.query_one("#harness-table", DataTable)
+        table = app.query_one("#data-table", DataTable)
         assert table.display is True
         assert table.row_count == 1
         assert app._selected_harness == "claude"
@@ -61,6 +61,98 @@ async def test_launch_without_selection_does_not_default():
         from fabric_dash.modal import ConfirmModal
         assert not isinstance(app.screen, ConfirmModal)
         assert app.return_value is None
+
+
+def make_client_with(overrides):
+    """make_client() but with specific --json commands overridden."""
+    base = {
+        "ai-litellm proxy status --json": json.dumps({"health": "ok", "configCurrency": "current", "baseUrl": "http://127.0.0.1:4000"}),
+        "ai-litellm model list --json": json.dumps([]),
+        "ai-litellm model limits --json": json.dumps([]),
+        "ai-litellm harness list --json": json.dumps([]),
+        "ai-litellm key status --json": json.dumps({}),
+        "ai-litellm runtime status --json": json.dumps([]),
+        "ai-litellm reasoning matrix --json": json.dumps([]),
+    }
+    base.update(overrides)
+
+    def run(argv):
+        return (0, base.get(" ".join(a for a in argv if a is not None), ""))
+
+    return FabricClient(runner=run)
+
+
+@pytest.mark.asyncio
+async def test_models_panel_renders_into_datatable_not_wrapping_text():
+    # The flagship view must use the real DataTable (which sizes/scrolls columns)
+    # rather than fixed-width text columns that overflowed the content panel.
+    client = make_client_with({
+        "ai-litellm model limits --json": json.dumps([
+            {"name": "claude-opus", "model": "glm-5.2", "tpm": 200000, "rpm": 4000, "maxIn": 131072, "maxOut": 131072},
+        ]),
+    })
+    app = FabricApp(client=client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.show_panel("models")
+        await pilot.pause()
+        from textual.widgets import DataTable, Static
+        table = app.query_one("#data-table", DataTable)
+        assert table.display is True
+        assert app.query_one("#content", Static).display is False
+        assert table.row_count == 1
+        # All six columns are present as real DataTable columns (no overflow).
+        assert len(table.columns) == 6
+        assert str(table.get_cell_at((0, 0))) == "claude-opus"
+
+
+@pytest.mark.asyncio
+async def test_invalid_harness_cells_render_red_check_marks():
+    # An invalid / not-installed harness must signal danger in color, not blend
+    # into healthy rows as neutral gray.
+    client = make_client_with({
+        "ai-litellm harness list --json": json.dumps([
+            {"name": "claude", "valid": True, "cliInstalled": True},
+            {"name": "goose", "valid": False, "cliInstalled": False},
+        ]),
+    })
+    app = FabricApp(client=client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "harnesses"
+        app.show_panel("harnesses")
+        await pilot.pause()
+        from textual.widgets import DataTable
+        table = app.query_one("#data-table", DataTable)
+        # columns: name, valid, cliInstalled
+        valid_ok = table.get_cell_at((0, 1))     # claude valid=True
+        valid_bad = table.get_cell_at((1, 1))    # goose valid=False
+        assert valid_ok.plain == "✓" and "green" in str(valid_ok.style)
+        assert valid_bad.plain == "✗" and "red" in str(valid_bad.style)
+        cli_bad = table.get_cell_at((1, 2))      # goose cliInstalled=False
+        assert cli_bad.plain == "✗" and "red" in str(cli_bad.style)
+
+
+@pytest.mark.asyncio
+async def test_missing_key_renders_red():
+    client = make_client_with({
+        "ai-litellm key status --json": json.dumps({
+            "OPENROUTER_API_KEY": {"source": "keychain"},
+            "GEMINI_API_KEY": {"source": "missing"},
+        }),
+    })
+    app = FabricApp(client=client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.show_panel("keys")
+        await pilot.pause()
+        from textual.widgets import Static
+        text = app.query_one("#content", Static).content
+        # The colored Text carries a red span exactly over the "missing" source.
+        reds = [text.plain[s.start:s.end] for s in text.spans if "red" in str(s.style)]
+        greens = [text.plain[s.start:s.end] for s in text.spans if "green" in str(s.style)]
+        assert "missing" in reds
+        assert "keychain" in greens
 
 
 @pytest.mark.asyncio

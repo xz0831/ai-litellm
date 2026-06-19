@@ -26,16 +26,16 @@ Tree {
 
 #content { width: 1fr; padding: 0 1; }
 
-#harness-table {
+#data-table {
     width: 1fr;
     height: 1fr;
 }
 /* Header row hierarchy: bold + accent, distinct from body. */
-#harness-table > .datatable--header {
+#data-table > .datatable--header {
     text-style: bold;
     color: $secondary;
 }
-#harness-table > .datatable--cursor {
+#data-table > .datatable--cursor {
     background: $primary;
     color: $text;
 }
@@ -57,19 +57,13 @@ ConfirmModal {
     height: auto;
     padding: 1 2;
     background: $surface;
-    border: round $warning;        /* restart grade: amber */
-}
-#confirm-box.destructive {
-    border: round $error;          /* destructive grade: red */
+    border: round $warning;        /* guarded grades: amber gate */
 }
 
 #confirm-title {
     text-style: bold;
     color: $warning;
     margin-bottom: 1;
-}
-#confirm-box.destructive #confirm-title {
-    color: $error;
 }
 
 #confirm-msg {

@@ -5,8 +5,11 @@ from textual.containers import Vertical, Horizontal
 from textual.widgets import Static, Button
 
 # Grades that interrupt active work — default focus to Cancel so a reflexive
-# Enter can't fire a disruptive action. (mirrors safety.RESTART / DESTRUCTIVE)
+# Enter can't fire a disruptive action. (mirrors safety.RESTART)
 _GUARDED = {"restart", "destructive"}
+# Note: "destructive" stays in the guard set so that if a destructive action is
+# ever wired into ACTIONS, its modal is Cancel-first by default. No destructive
+# action is currently surfaced, so its dedicated red styling was removed.
 
 
 class ConfirmModal(ModalScreen):
@@ -26,8 +29,6 @@ class ConfirmModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         box = Vertical(id="confirm-box")
-        # destructive gets the error border; everything else the warning border
-        box.add_class("destructive" if self._grade == "destructive" else "restart")
         with box:
             yield Static(self._title, id="confirm-title")
             yield Static(self._consequence, id="confirm-msg")
