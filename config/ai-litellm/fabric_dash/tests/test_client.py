@@ -24,3 +24,20 @@ def test_list_method_empty_on_failure():
 def test_object_method_empty_on_invalid_json():
     c = FabricClient(runner=fake({"ai-litellm proxy status --json": "not json"}))
     assert c.proxy_status() == {}
+
+def test_reasoning_allowed_reads():
+    from fabric_dash.client import FabricClient
+    seen = []
+    def run(argv):
+        seen.append(argv)
+        if argv[:4] == ["ai-litellm", "model", "reasoning", "allowed"]:
+            return (0, '["low","high","xhigh"]')
+        if argv[:4] == ["ai-litellm", "harness", "reasoning", "allowed"]:
+            return (0, '["auto","high","max"]')
+        return (1, "")
+    c = FabricClient(runner=run)
+    assert c.model_reasoning_allowed("GLM-5.2") == ["low", "high", "xhigh"]
+    assert c.harness_reasoning_allowed("claude") == ["auto", "high", "max"]
+    assert ["ai-litellm", "model", "reasoning", "allowed", "GLM-5.2", "--json"] in seen
+    # failure → empty list, never raises
+    assert FabricClient(runner=lambda a: (1, "")).model_reasoning_allowed("x") == []
