@@ -12,7 +12,7 @@ from dataclasses import dataclass
 class Command:
     group: str          # grouping label, e.g. "proxy" / "model" / "harness"
     label: str          # human label shown in the list, e.g. "restart proxy"
-    argv: tuple         # base argv (after the `ai-litellm` binary)
+    argv: tuple[str, ...]  # base argv (after the `ai-litellm` binary)
     takes_args: bool    # whether the user must supply more args
     usage: str          # hint shown in arg mode (full `ai-litellm …` usage line)
 
@@ -43,7 +43,7 @@ def filter_commands(commands: list[Command], query: str) -> list[Command]:
     """Case-insensitive subsequence (fuzzy) match on 'group label'. Empty → all."""
     q = query.strip().lower()
     if not q:
-        return commands
+        return list(commands)  # copy: never hand back the caller's (module-level) list
     out = []
     for c in commands:
         hay = f"{c.group} {c.label}".lower()

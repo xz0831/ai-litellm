@@ -18,13 +18,17 @@ def test_registry_grades_resolve_via_classify():
 
 def test_lifecycle_entries_match_safety_actions():
     argvs = {tuple(c.argv) for c in COMMANDS}
-    assert ("proxy", "restart") in argvs and ("sync",) in argvs and ("proxy", "start") in argvs
+    # Every lifecycle/doctor action must be reachable by name in the palette.
+    for a in safety.ACTIONS:
+        assert tuple(a.argv) in argvs, f"missing registry entry for {a.label}"
 
 
 def test_filter_is_fuzzy_subsequence_case_insensitive():
     res = filter_commands(COMMANDS, "rst")  # subsequence of "restart"
     assert any(c.argv == ("proxy", "restart") for c in res)
-    assert filter_commands(COMMANDS, "") == COMMANDS          # empty → all
+    empty = filter_commands(COMMANDS, "")
+    assert empty == COMMANDS                                  # empty → all
+    assert empty is not COMMANDS                              # but a copy: never alias the global registry
     assert filter_commands(COMMANDS, "zzzznope") == []        # no match → empty
 
 
