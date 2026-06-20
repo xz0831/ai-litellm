@@ -162,7 +162,7 @@ your machine with `ai-litellm context matrix` and `ai-litellm model limits <name
   provider rejects. (On Claude the guardrail still caps the *operating* input at 200K;
   the 221,950 is the true ceiling the Codex `gpt-5.4` surface uses.)
 
-### 4c. GLM-5.1 — provider omits the output cap (cloud / OpenRouter)
+### 4c. GLM-5.2 — provider omits the output cap (cloud / OpenRouter)
 - **Capability:** input **202,752** (provider), output **131,072** — but this output is
   **owned-policy**: OpenRouter omits `max_completion_tokens` for GLM, so the fabric sets a
   conservative ceiling and labels it (`x_output_source: provider-omits-max-completion-tokens`).

@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-20
 Branch: `feat/fabric-dash` (PR #2)
-Status: 구현 완료 · CI green · 23개 테스트 통과
+Status: 구현 완료 · CI green · 대시 테스트 일체 통과 (venv 아래 pytest 실행)
 
 이 문서는 `fabric` 대시보드 서브시스템의 **유지보수자용 정본 가이드**다. "무엇이고, 어떻게 띄우며, 어떻게 계층이 나뉘고, 각 모듈이 무엇을 책임지며, 안전 모델의 load-bearing 불변식이 무엇이고, 어떻게 개발·실행·테스트하는가"를 다룬다. 설계 *이유*(반론 포함)는 `DESIGN_RATIONALE.md`가, 전체 운영 절차는 `AI_AGENT_LITELLM_ARCHITECTURE.md`가, 원래 설계 의도는 `docs/superpowers/specs/2026-06-18-fabric-dashboard-tui-design.md`(=PLAN)가 맡는다. 이 문서는 **실제로 빌드된 것**을 코드에 근거해 기술하며, PLAN에서 갈라지거나 확장된 지점은 표시한다.
 
@@ -81,7 +81,7 @@ Textual이 venv에 없을 때: `__main__.main()`이 `ModuleNotFoundError`를 잡
 | `context_matrix()` | `context matrix --json` | list |
 | `harness_list()` | `harness list --json` | list |
 
-> **PLAN과의 차이/주의:** `client.py`는 위 9개 read 메서드를 모두 제공하지만, `app.py`가 실제로 패널에 *와이어*하는 것은 일부다. "Budget & Policy" 패널은 `reasoning_matrix()`를 그린다(app.py `_panel_rows`, 라인 ~196) — `context_matrix()`와 `route_list()`는 client에 존재하나 현재 어떤 패널도 호출하지 않는다(향후 확장 여지). 이 불일치는 의도된 것이 아니라 "client가 표면을 넓게 덮고 app은 그중 일부만 노출"하는 상태로 보는 것이 정확하다. [재구성]
+> **PLAN과의 차이/주의:** `client.py`는 위 9개 read 메서드를 모두 제공하지만, `app.py`가 실제로 패널에 *와이어*하는 것은 일부다. "Budget & Policy" 패널은 `reasoning_matrix()`를 그린다(app.py `_panel_rows` 메서드) — `context_matrix()`와 `route_list()`는 client에 존재하나 현재 어떤 패널도 호출하지 않는다(향후 확장 여지). 이 불일치는 의도된 것이 아니라 "client가 표면을 넓게 덮고 app은 그중 일부만 노출"하는 상태로 보는 것이 정확하다. [재구성]
 
 `--json` 계약의 핵심 보증(소비 측이 의존하는 부분):
 
@@ -127,6 +127,9 @@ Textual이 venv에 없을 때: `__main__.main()`이 `ModuleNotFoundError`를 잡
 ### `__main__.py` — 진입 + hand-off
 `--help`/`-h` 단축. Textual import 실패를 잡아 안내. `FabricApp().run()`이 `("launch", [harness])` 튜플을 반환하면 `os.execvp("ai-litellm", ["ai-litellm", "harness", "launch", harness])`로 **현재 프로세스를 대체**해 터미널을 하니스에 넘긴다. [기록]
 
+### `help.py` — `?` 키맵 오버레이
+`HelpOverlay(ModalScreen)`. `?` 키를 누르면 app.py의 `action_help`가 이 스크린을 `push_screen`한다. 전체 키맵을 한 곳에서 보여주어 발견 가능성을 높인다. `?`/`esc`/`q`로 닫힌다. 부수효과 없음 — 순수 표시 전용. [기록 — help.py 파일 docstring]
+
 ### `app.tcss` — status 색 시스템
 `.ok/.warn/.bad → $success/$warning/$error`. 레이아웃(상단 status dock, 좌측 Tree 폭 28, 하단 footer/results dock)과 ConfirmModal 스타일(amber `round $warning` 보더, 뒤 배경 60% dim)을 정의. 색은 app.py에서 인라인 Rich 태그로도 적용되며, 이 클래스들은 위젯이 같은 팔레트에 opt-in하게 한다. [기록 — 파일 상단 주석]
 
@@ -166,7 +169,7 @@ Textual이 venv에 없을 때: `__main__.main()`이 `ModuleNotFoundError`를 잡
 
 ## 7. 테스트
 
-총 **23개** 테스트, 4개 파일. 패키지 소유 venv의 pytest로 구동(`textual`·`pytest`·`pytest-asyncio` 필요).
+패키지 소유 venv의 pytest로 구동(`textual`·`pytest`·`pytest-asyncio` 필요). 실제 합계는 CI가 정본이다(수치는 여기에 고정하지 않는다).
 
 | 파일 | 커버 |
 |---|---|

@@ -59,7 +59,7 @@ Tracked source:
 - `docs/APPLYING_MODELS_TO_HARNESSES.md`: practitioner playbook — given a model
   (cloud/OpenRouter or local/oMLX), how to apply it to Claude Code / Codex / goose /
   opencode with the context & token budgeting right, with worked examples
-  (DeepSeek-V4-Pro, Kimi-K2.6, GLM-5.1, local Qwen3.6)
+  (DeepSeek-V4-Pro, Kimi-K2.6, GLM-5.2, local Qwen3.6)
 - `scripts/install.zsh`: installer for another Mac
 - `scripts/uninstall.zsh`: package/shim remover
 

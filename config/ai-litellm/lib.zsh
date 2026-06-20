@@ -5787,14 +5787,14 @@ ai_litellm_context_warn_glm_output_source() {
   ai_litellm_ruby -ryaml -e '
 config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 Array(config["model_list"]).each do |e|
-  next unless e.dig("litellm_params", "model").to_s == "openrouter/z-ai/glm-5.1"
+  next unless e.dig("litellm_params", "model").to_s == "openrouter/z-ai/glm-5.2"
   out = e.dig("model_info", "max_output_tokens")
   confidence = e.dig("model_info", "x_output_confidence").to_s
   if out
     if confidence == "owned-policy"
-      puts "owned-policy: GLM-5.1 output cap #{out} is a conservative local ceiling because OpenRouter omits max_completion_tokens."
+      puts "owned-policy: GLM-5.2 output cap #{out} is a conservative local ceiling because OpenRouter omits max_completion_tokens."
     elsif !%w[provider observed].include?(confidence)
-      puts "GLM-5.1 output cap #{out} is #{confidence.empty? ? "local-configured" : confidence}; keep provider-declared confidence lower unless OpenRouter max_completion_tokens is observed."
+      puts "GLM-5.2 output cap #{out} is #{confidence.empty? ? "local-configured" : confidence}; keep provider-declared confidence lower unless OpenRouter max_completion_tokens is observed."
     end
   end
   break

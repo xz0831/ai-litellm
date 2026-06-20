@@ -198,11 +198,11 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 **결정: read-then-act 분리 — 기본은 read-only, mutating 액션은 확인 모달로 게이트한다. 중단성(RESTART) 및 파괴적(DESTRUCTIVE) 등급은 Cancel-우선 ConfirmModal; 과금성(BILLABLE) launch는 Confirm-포커스 모달.** [실증]
 
-`safety.classify(argv)`(`safety.py`)가 액션을 4계급으로 가른다: `SAFE`(start/doctor — 자유 실행), `RESTART`, `BILLABLE`, `DESTRUCTIVE`. `ACTIONS` 테이블에서 SAFE인 start/doctor는 `requires_confirm=False`로 바로 돌고, sync/restart/stop은 `RESTART`로 ConfirmModal 뒤에 선다. 자동 갱신(auto-refresh)은 **엄격히 read-only**다 — 화면을 새로 그리는 폴링이 절대 mutating 명령을 부르지 않는다. 그 분리의 강제 지점은 `FabricClient`(`client.py`)가 *읽기 표면만* 노출한다는 것이다: `proxy_status`/`model_list`/`route_list`/`reasoning_matrix` 등 `--json` read 명령만 메서드로 있고, 실행 측은 별도 `ActionRunner`(`actions.py`)에 격리됐다. 안전 기본값은 *구조*로 보장된다 — read 경로에는 mutate 메서드가 아예 없다.
+`safety.classify(argv)`(`safety.py`)가 액션을 4계급으로 가른다: `SAFE`(start/doctor — 자유 실행), `RESTART`, `BILLABLE`, `DESTRUCTIVE`. `ACTIONS` 테이블에서 SAFE인 start/doctor는 `needs_confirm=False`로 바로 돌고, sync/restart/stop은 `RESTART`로 ConfirmModal 뒤에 선다. 자동 갱신(auto-refresh)은 **엄격히 read-only**다 — 화면을 새로 그리는 폴링이 절대 mutating 명령을 부르지 않는다. 그 분리의 강제 지점은 `FabricClient`(`client.py`)가 *읽기 표면만* 노출한다는 것이다: `proxy_status`/`model_list`/`route_list`/`reasoning_matrix` 등 `--json` read 명령만 메서드로 있고, 실행 측은 별도 `ActionRunner`(`actions.py`)에 격리됐다. 안전 기본값은 *구조*로 보장된다 — read 경로에는 mutate 메서드가 아예 없다.
 
 **결정: `FabricClient`는 실패 시 traceback이 아니라 빈 컨테이너를 반환한다(empty-on-failure), runner는 주입 가능하다.** [실증]
 
-`client.py` 헤더가 명시: "returns an empty container so the TUI shows 'empty', never a traceback." `_obj`/`_arr`이 `except Exception: return {}`/`return []`로 감싸 CLI가 죽거나 비-JSON을 뱉어도 패널이 "비어 있음"으로 graceful하게 표시된다. runner(`__init__(self, runner=None, ...)`)가 주입 가능한 덕에 23개 테스트가 실제 CLI 없이 가짜 응답으로 전 패널·전 액션을 결정론적으로 돈다(`make_client_with({...})` 패턴, `tests/test_{app,actions_app,client,safety}.py`).
+`client.py` 헤더가 명시: "returns an empty container so the TUI shows 'empty', never a traceback." `_obj`/`_arr`이 `except Exception: return {}`/`return []`로 감싸 CLI가 죽거나 비-JSON을 뱉어도 패널이 "비어 있음"으로 graceful하게 표시된다. runner(`__init__(self, runner=None, ...)`)가 주입 가능한 덕에 대시 테스트 일체가 실제 CLI 없이 가짜 응답으로 전 패널·전 액션을 결정론적으로 돈다(`make_client_with({...})` 패턴, `tests/test_{app,actions_app,client,safety}.py`).
 
 **결정: 대시보드는 패키지 소유 venv(`$AI_LITELLM_STATE_HOME/dash-venv`)에 격리된다.** [기록]
 
@@ -212,7 +212,7 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 **결정: `--json` read API는 output-FORMATTER-ONLY다 — 상태를 절대 재유도하지 않는다.** [실증]
 
-TUI가 소비하는 계약(proxy status, model list/limits, route list/info, runtime status, reasoning/context matrix, harness list/info, key status가 `--json` 획득)은 *형식 변환 계층*일 뿐이다: 기존 텍스트 출력과 동일한 소스에서 camelCase JSON을 방출하되 백엔드 로직은 한 줄도 안 건든다(default 텍스트 출력은 byte-identical 유지). lib.zsh의 형제 `*_json` emitter들(`ai_litellm_status_json` L2255 등)과 `ai_litellm_emit_json` 헬퍼(L96 — argv 쌍을 `@num:`/`@bool:`/`@null` 마커로 타입화해 JSON 직렬화)가 구현한다. 매트릭스(reasoning/context)는 코드를 복제하는 대신 `AI_LITELLM_MATRIX_JSON` env 플래그로 **기존 Ruby가 JSON을 방출**하게 해 단일 진실원을 지킨다. 읽을 수 없는 소스는 `{}`/`[]`를 주고 exit 0 — client.py의 empty-on-failure와 짝을 이룬다. read-only 명령에만 붙는다.
+TUI가 소비하는 계약(proxy status, model list/limits, route list, runtime status, reasoning/context matrix, harness list/info, key status가 `--json` 획득)은 *형식 변환 계층*일 뿐이다: 기존 텍스트 출력과 동일한 소스에서 camelCase JSON을 방출하되 백엔드 로직은 한 줄도 안 건든다(default 텍스트 출력은 byte-identical 유지). lib.zsh의 형제 `*_json` emitter들(`ai_litellm_status_json` L2255 등)과 `ai_litellm_emit_json` 헬퍼(L96 — argv 쌍을 `@num:`/`@bool:`/`@null` 마커로 타입화해 JSON 직렬화)가 구현한다. 매트릭스(reasoning/context)는 코드를 복제하는 대신 `AI_LITELLM_MATRIX_JSON` env 플래그로 **기존 Ruby가 JSON을 방출**하게 해 단일 진실원을 지킨다. 읽을 수 없는 소스는 `{}`/`[]`를 주고 exit 0 — client.py의 empty-on-failure와 짝을 이룬다. read-only 명령에만 붙는다.
 
 **결정: 품질 보증은 Textual `run_test()` 파일럿으로 *렌더된* 위젯 트리를 검증한다(SVG 스냅샷 diff 아님).** [실증]
 
@@ -247,7 +247,7 @@ TUI가 소비하는 계약(proxy status, model list/limits, route list/info, run
 | 양 오버레이의 defaultMode=default **렌더 기본값** (라이브 오버레이의 운영자 상향은 사양임 — §2) | ✅ check (06-12 추가; throwaway HOME의 신규 렌더만 검사) |
 | symlink 존재·대상·`~/.claude` 비생성·멱등 | ✅ check |
 | 예약 수치(221950/3277) 고정 + 예산 공식 5중 구현 lockstep — §4a | ✅ check (수치 고정 + `verify_budget_consistency.py` 차분 테스트가 5사본을 라이브 슬라이스해 정합 단언) |
-| 대시보드 회귀(read-only 패널·액션 안전 분류) — §6a | ✅ CI `dash-tests` 잡 (venv+textual 프로비저닝, `run_test` 파일럿 23 테스트; check.zsh는 venv 부재 시 skip) |
+| 대시보드 회귀(read-only 패널·액션 안전 분류) — §6a | ✅ CI `dash-tests` 잡 (venv+textual 프로비저닝, `run_test` 파일럿 테스트 일체; check.zsh는 venv 부재 시 skip) |
 | gateway 정책 enabled=true | ✅ doctor ("must stay true") |
 | codex 카탈로그 신선도 | ✅ doctor limit-sync |
 | dedup(빈 출력 단언 — 네이밍 변경에 면역) | ✅ check (06-12 수정: 종전 단언은 옛 이름을 검사해 무효였음) |
