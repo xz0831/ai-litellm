@@ -10,6 +10,7 @@ _KEYS = [
     ("s", "start proxy"), ("S", "sync (restart proxy)"),
     ("R", "restart proxy"), ("X", "stop proxy"), ("d", "doctor (full battery)"),
     ("l", "launch selected harness (billable)"),
+    ("e", "set reasoning effort (model/harness)"),
     ("↑/↓", "move selection"), ("enter", "select / drill in"),
 ]
 

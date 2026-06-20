@@ -100,6 +100,7 @@ class FabricApp(App):
     ENABLE_COMMAND_PALETTE = False  # we bind ctrl+p to our own CommandPalette
     BINDINGS = (
         [("q", "quit", "Quit"), ("r", "refresh", "Refresh"), ("l", "launch", "Launch"),
+         ("e", "effort", "Reasoning"),
          ("question_mark", "help", "Help"), ("colon", "palette", "Commands"), ("ctrl+p", "palette", "Commands")]
         + [(a.key, f"do_{a.key}", a.label) for a in ACTIONS]
     )
@@ -125,6 +126,8 @@ class FabricApp(App):
         # Mutating group: launch only on harnesses, then the non-SAFE actions.
         if node_id == "harnesses":
             items.append(FooterItem("l", "launch", BILLABLE, True))
+        if node_id in ("models", "harnesses"):
+            items.append(FooterItem("e", "reasoning", SAFE, False))
         items += [
             FooterItem(a.key, a.label, a.grade, True)
             for a in ACTIONS if a.grade != SAFE
@@ -137,6 +140,7 @@ class FabricApp(App):
         self.runner = runner or ActionRunner()
         self._selected = "proxy"
         self._selected_harness: str | None = None
+        self._selected_model: str | None = None
         self._refresh_in_flight = False
 
     def compose(self) -> ComposeResult:
@@ -353,6 +357,13 @@ class FabricApp(App):
             # Row keys are "<label>#<i>"; strip the disambiguating index suffix.
             self._selected_harness = str(event.row_key.value).rsplit("#", 1)[0] or None
             self.call_later(self.refresh_status)
+        if (
+            event.data_table.id == "data-table"
+            and self._selected == "models"
+            and event.row_key is not None
+            and event.row_key.value is not None
+        ):
+            self._selected_model = str(event.row_key.value).rsplit("#", 1)[0] or None
 
     # --- action helpers ---
 
@@ -434,3 +445,26 @@ class FabricApp(App):
         if not ok:
             return
         self.exit(result=("launch", [harness]))
+
+    @work
+    async def action_effort(self) -> None:
+        if self._selected == "models" and self._selected_model:
+            target, level = self._selected_model, "model"
+            allowed = await asyncio.to_thread(self.client.model_reasoning_allowed, target)
+        elif self._selected == "harnesses" and self._selected_harness:
+            target, level = self._selected_harness, "harness"
+            allowed = await asyncio.to_thread(self.client.harness_reasoning_allowed, target)
+        else:
+            self.query_one("#results", RichLog).write(
+                "[yellow]select a model or harness row first, then press e[/]"
+            )
+            return
+        from .effort_modal import EffortSelector
+        choice = await self.push_screen_wait(EffortSelector(allowed, target))
+        if choice is None:
+            return
+        if choice == "unset":
+            argv = [level, "reasoning", "unset", target]
+        else:
+            argv = [level, "reasoning", "set", target, choice]
+        await self._run_argv(argv, f"{level} reasoning {target}")
