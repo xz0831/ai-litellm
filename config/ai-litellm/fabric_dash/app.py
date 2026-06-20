@@ -52,13 +52,29 @@ _BOOL_READY_KEYS = {"valid", "cliInstalled"}
 _BAD_SOURCES = {"missing", "unset", "none", ""}
 
 
+def _format_value(value) -> str:
+    """Human-readable scalar for a table cell. Dicts/lists are flattened to a
+    compact ' / '-joined string of their values (the --json `sources` field is a
+    dict like {'context': 'provider', 'output': 'owned-policy'}) instead of a raw
+    Python repr leaking into the UI."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " / ".join(_format_value(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return " / ".join(_format_value(v) for v in value)
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
+
+
 def _cell(key: str, value) -> Text:
     """Render one table cell, coloring readiness signals per the status system."""
     if key in _BOOL_READY_KEYS or isinstance(value, bool):
         truthy = value is True or str(value).strip().lower() in ("true", "yes", "1")
         return Text("✓" if truthy else "✗", style=_OK if truthy else _BAD)
-    text = "" if value is None else str(value)
-    if key == "source" and text.strip().lower() in _BAD_SOURCES:
+    text = _format_value(value)
+    if key in ("source", "sources") and text.strip().lower() in _BAD_SOURCES:
         return Text(text, style=_BAD)
     return Text(text)
 

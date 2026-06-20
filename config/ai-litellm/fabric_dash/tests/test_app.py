@@ -278,3 +278,19 @@ async def test_app_boots_and_shows_proxy_health():
         labels = [str(n.label) for n in tree.root.children]
         assert any("Proxy" in l for l in labels)
         assert any("Models" in l for l in labels)
+
+
+def test_cell_formats_dict_value_not_raw_repr():
+    from fabric_dash.app import _cell
+    cell = _cell("sources", {"context": "provider", "output": "owned-policy"})
+    plain = cell.plain
+    assert "{" not in plain and "'" not in plain          # no python repr leakage
+    assert "provider" in plain and "owned-policy" in plain  # values shown
+    assert plain == "provider / owned-policy"               # compact, ordered by dict order
+
+
+def test_cell_formats_scalars_and_none():
+    from fabric_dash.app import _cell
+    assert _cell("context", 1048576).plain == "1048576"
+    assert _cell("model", None).plain == ""
+    assert _cell("backend", "openrouter/x").plain == "openrouter/x"
