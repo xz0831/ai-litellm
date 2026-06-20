@@ -397,7 +397,9 @@ class FabricApp(App):
 
     @work
     async def _run_argv_worker(self, argv: list[str], label: str | None = None) -> None:
-        """Worker entrypoint to run an arbitrary registry argv (used by the palette)."""
+        """Test-only worker entry: drives _run_argv from a worker context so a
+        Pilot test can exercise the confirm gate. Production paths (action_palette,
+        _run_action) await _run_argv directly from their own @work context."""
         await self._run_argv(argv, label)
 
     # Per-key action methods (explicit, not metaprogrammed); @work makes _run_action sync-callable
