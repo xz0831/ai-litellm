@@ -115,3 +115,9 @@ ConfirmModal {
 #confirm-buttons Button {
     margin-left: 2;
 }
+
+/* ── command palette: fuzzy filter + arg-mode ───────────────────────────*/
+CommandPalette { align: center middle; background: $background 60%; }
+#palette-box { width: 70; height: auto; max-height: 80%; padding: 1 2; background: $surface; border: round $primary; }
+#palette-input { margin-bottom: 1; }
+#palette-list { height: auto; max-height: 16; }
