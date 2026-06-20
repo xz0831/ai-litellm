@@ -484,3 +484,39 @@ async def test_refresh_status_reentrancy_guard():
             f"Guard failed: expected exactly 1 proxy_status call for 2 concurrent "
             f"refresh_status invocations, got {call_counter}"
         )
+
+
+@pytest.mark.asyncio
+async def test_run_argv_safe_runs_without_modal_and_logs():
+    calls = []
+    def spawn(argv):
+        calls.append(argv)
+        return (0, ["did the thing"])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_argv(["proxy", "start"], label="start proxy")  # SAFE → no modal
+        await pilot.pause()
+        from textual.widgets import RichLog
+        assert calls and calls[0] == ["ai-litellm", "proxy", "start"]
+        # not asserting modal absence beyond: the call completed inline (no hang)
+
+
+@pytest.mark.asyncio
+async def test_run_argv_restart_goes_through_confirm_modal():
+    calls = []
+    def spawn(argv):
+        calls.append(argv)
+        return (0, [])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._run_argv_worker(["proxy", "restart"], "restart proxy")  # schedule via a worker wrapper
+        await pilot.pause()
+        from fabric_dash.modal import ConfirmModal
+        assert isinstance(app.screen, ConfirmModal)   # RESTART → gated, not yet run
+        assert calls == []
+        await pilot.press("tab"); await pilot.press("enter"); await pilot.pause()
+        assert calls and calls[0] == ["ai-litellm", "proxy", "restart"]

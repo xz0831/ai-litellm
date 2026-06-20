@@ -9,7 +9,7 @@ from textual.theme import Theme
 from textual.widgets import Header, Tree, Static, RichLog, DataTable
 from textual import work
 from .client import FabricClient
-from .safety import ACTIONS, BILLABLE, SAFE
+from .safety import ACTIONS, BILLABLE, SAFE, classify
 from .actions import ActionRunner
 from .modal import ConfirmModal
 from .footer import StatusFooter, FooterItem
@@ -350,40 +350,43 @@ class FabricApp(App):
                 return a
         return None
 
-    @work
-    async def _run_action(self, key: str) -> None:
-        """Run an action; @work provides the worker context needed by push_screen_wait.
-
-        The confirm gate (push_screen_wait) stays on the event loop — it must
-        be awaited in an async worker context.  Only the blocking subprocess
-        call is offloaded to a thread pool via asyncio.to_thread so the UI
-        remains responsive during long-running actions (pre-merge P1 fix).
-        Widget mutations (log.write, refresh_status) happen after the await,
-        back on the main thread.
-        """
-        a = self._action_by_key(key)
-        if a is None:
-            return
-        if a.needs_confirm:
+    async def _run_argv(self, argv: list[str], label: str | None = None,
+                        consequence: str | None = None) -> None:
+        """Shared command execution core: gate by classify(argv), offload the
+        blocking subprocess off the event loop, stream results to the log.
+        Awaited from a worker (callers are @work) so push_screen_wait works."""
+        grade = classify(argv)
+        name = label or " ".join(argv)
+        if grade != SAFE:
+            msg = consequence or f"run `ai-litellm {' '.join(argv)}` — a {grade} action."
             ok = await self.push_screen_wait(
-                ConfirmModal(a.consequence, title=f"Confirm {a.label}", grade=a.grade)
+                ConfirmModal(msg, title=f"Confirm {name}", grade=grade)
             )
             if not ok:
-                self.query_one("#results", RichLog).write(f"[dim]cancelled: {a.label}[/]")
+                self.query_one("#results", RichLog).write(f"[dim]cancelled: {name}[/]")
                 return
         log = self.query_one("#results", RichLog)
-        log.write(f"$ ai-litellm {' '.join(a.argv)}")
-        # Offload the blocking subprocess.run (up to 600s timeout) to a thread
-        # so the event loop is free during the action.  The confirm gate above
-        # stays on-loop — push_screen_wait requires an async worker context.
+        log.write(f"$ ai-litellm {' '.join(argv)}")
         lines: list[str] = []
-        rc = await asyncio.to_thread(self.runner.run, list(a.argv), lines.append)
-        # Widget mutations must happen on the main thread (we are back on the
-        # event loop here — asyncio.to_thread awaits the thread and returns).
+        rc = await asyncio.to_thread(self.runner.run, list(argv), lines.append)
         for ln in lines:
             log.write(ln)
         log.write(f"[{'green' if rc == 0 else 'red'}]exit {rc}[/]")
         await self.refresh_status()
+
+    @work
+    async def _run_action(self, key: str) -> None:
+        """Run a registry action; @work provides the worker context needed by
+        push_screen_wait. Delegates gate+offload+log to _run_argv."""
+        a = self._action_by_key(key)
+        if a is None:
+            return
+        await self._run_argv(list(a.argv), a.label, a.consequence)
+
+    @work
+    async def _run_argv_worker(self, argv: list[str], label: str | None = None) -> None:
+        """Worker entrypoint to run an arbitrary registry argv (used by the palette)."""
+        await self._run_argv(argv, label)
 
     # Per-key action methods (explicit, not metaprogrammed); @work makes _run_action sync-callable
     def action_do_s(self) -> None: self._run_action("s")
