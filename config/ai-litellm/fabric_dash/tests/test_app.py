@@ -783,3 +783,40 @@ async def test_key_action_guarded_off_keys_panel():
         await pilot.press("k"); await pilot.pause()
         from fabric_dash.key_modal import KeySetModal
         assert not isinstance(app.screen, KeySetModal)        # guarded
+
+
+@pytest.mark.asyncio
+async def test_tier_modal_pick_tier_then_model_returns_tuple():
+    from fabric_dash.tier_modal import TierMapModal
+    captured = {}
+    tiers = [{"tier": "fable", "model": "GLM-5.2-openrouter"}, {"tier": "opus", "model": "DeepSeek-V4-Pro-openrouter"}]
+    models = ["GLM-5.2-openrouter", "Kimi-K2.6-openrouter"]
+    app = FabricApp(client=make_client())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        async def grab():
+            captured["c"] = await app.push_screen_wait(TierMapModal(tiers, models))
+        app.run_worker(grab())
+        await pilot.pause()
+        await pilot.press("down")          # tier -> opus (index 1)
+        await pilot.press("enter")         # enter model-pick mode
+        await pilot.pause()
+        await pilot.press("down")          # model -> Kimi (index 1)
+        await pilot.press("enter")
+        await pilot.pause()
+        tier, model = captured["c"]
+        assert tier == "opus" and model == "Kimi-K2.6-openrouter"
+
+@pytest.mark.asyncio
+async def test_tier_modal_escape_cancels():
+    from fabric_dash.tier_modal import TierMapModal
+    captured = {}
+    app = FabricApp(client=make_client())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        async def grab():
+            captured["c"] = await app.push_screen_wait(TierMapModal([{"tier": "fable", "model": "x"}], ["x"]))
+        app.run_worker(grab())
+        await pilot.pause()
+        await pilot.press("escape"); await pilot.pause()
+        assert captured["c"] is None
