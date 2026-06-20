@@ -22,7 +22,7 @@ class CommandPalette(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="palette-box"):
-            yield Input(placeholder="filter commands…  (enter to run, esc to close)", id="palette-input")
+            yield Input(placeholder="filter commands…  (enter to select, esc to close)", id="palette-input")
             yield ListView(id="palette-list")
 
     def on_mount(self) -> None:

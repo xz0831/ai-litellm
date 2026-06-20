@@ -97,8 +97,10 @@ def _cell(key: str, value) -> Text:
 class FabricApp(App):
     CSS_PATH = Path(__file__).parent / "app.tcss"
     TITLE = "ai-litellm fabric"
+    ENABLE_COMMAND_PALETTE = False  # we bind ctrl+p to our own CommandPalette
     BINDINGS = (
-        [("q", "quit", "Quit"), ("r", "refresh", "Refresh"), ("l", "launch", "Launch"), ("question_mark", "help", "Help")]
+        [("q", "quit", "Quit"), ("r", "refresh", "Refresh"), ("l", "launch", "Launch"),
+         ("question_mark", "help", "Help"), ("colon", "palette", "Commands"), ("ctrl+p", "palette", "Commands")]
         + [(a.key, f"do_{a.key}", a.label) for a in ACTIONS]
     )
 
@@ -180,6 +182,16 @@ class FabricApp(App):
     def action_help(self) -> None:
         from .help import HelpOverlay
         self.push_screen(HelpOverlay())
+
+    @work
+    async def action_palette(self) -> None:
+        from .palette import CommandPalette
+        from .commands import COMMANDS
+        choice = await self.push_screen_wait(CommandPalette(COMMANDS))
+        if not choice:
+            return
+        label, argv = choice
+        await self._run_argv(argv, label)
 
     async def refresh_status(self) -> None:
         # Re-entrancy guard: if a refresh is already in flight (e.g. the proxy

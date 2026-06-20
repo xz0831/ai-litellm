@@ -583,3 +583,50 @@ async def test_palette_escape_cancels():
         await pilot.press("escape")
         await pilot.pause()
         assert captured["choice"] is None
+
+
+@pytest.mark.asyncio
+async def test_colon_opens_palette():
+    app = FabricApp(client=make_client())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("colon")
+        await pilot.pause()
+        from fabric_dash.palette import CommandPalette
+        assert isinstance(app.screen, CommandPalette)
+
+
+@pytest.mark.asyncio
+async def test_palette_runs_safe_command_without_modal():
+    calls = []
+    def spawn(argv):
+        calls.append(argv); return (0, ["ok"])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("colon"); await pilot.pause()
+        for ch in "start":                  # filter -> "start proxy" (SAFE)
+            await pilot.press(ch)
+        await pilot.press("enter"); await pilot.pause()  # select+run, no modal
+        assert calls and calls[0] == ["ai-litellm", "proxy", "start"]
+
+
+@pytest.mark.asyncio
+async def test_palette_restart_command_goes_through_confirm_modal():
+    calls = []
+    def spawn(argv):
+        calls.append(argv); return (0, [])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("colon"); await pilot.pause()
+        for ch in "restart":
+            await pilot.press(ch)
+        await pilot.press("enter"); await pilot.pause()  # palette closes, gate opens
+        from fabric_dash.modal import ConfirmModal
+        assert isinstance(app.screen, ConfirmModal)
+        assert calls == []                               # not run until confirmed
+        await pilot.press("tab"); await pilot.press("enter"); await pilot.pause()
+        assert calls and calls[0] == ["ai-litellm", "proxy", "restart"]
