@@ -220,6 +220,14 @@ for cmd in "route list" "runtime status" "reasoning matrix" "context matrix"; do
   json_check "$cmd --json" "$HOME/.local/bin/ai-litellm" ${=cmd} --json
 done
 echo "ok: route/runtime/reasoning/context --json"
+# ── reasoning allowed --json (model + harness) ────────────────────────────────
+m_allowed="$("$HOME/.local/bin/ai-litellm" model reasoning allowed GLM-5.2-openrouter --json 2>/dev/null)"
+print -r -- "$m_allowed" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);if(!Array.isArray(a)||!a.includes(\"high\")){console.error(\"not an array with high\");process.exit(1)}})" \
+  || { echo "FAIL: model reasoning allowed --json"; exit 1; }
+h_allowed="$("$HOME/.local/bin/ai-litellm" harness reasoning allowed claude --json 2>/dev/null)"
+print -r -- "$h_allowed" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);if(!Array.isArray(a)||a.length===0){console.error(\"not a non-empty array\");process.exit(1)}})" \
+  || { echo "FAIL: harness reasoning allowed --json"; exit 1; }
+echo "ok: reasoning allowed --json (model+harness)"
 # ── H4: usage labels are real verbs; Effort is a reference, not a command ──
 usage_out="$("$HOME/.local/bin/ai-litellm" --help 2>&1)"
 [[ "$usage_out" == *"Uninstall:"* ]]      || { echo "FAIL: usage missing 'Uninstall:' label" >&2; exit 1; }

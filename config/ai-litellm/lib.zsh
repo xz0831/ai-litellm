@@ -3957,6 +3957,12 @@ puts allowed.join(" ")
 ' "$AI_LITELLM_CONFIG" "$model"
 }
 
+ai_litellm_model_reasoning_allowed_json() {
+  local allowed
+  allowed="$(ai_litellm_model_reasoning_allowed_efforts "${1:-}" 2>/dev/null)" || { printf '[]'; return 0; }
+  ai_litellm_ruby -rjson -e 'puts JSON.generate(ARGV[0].to_s.split)' "$allowed" 2>/dev/null || printf '[]'
+}
+
 ai_litellm_model_reasoning_update() {
   local mode="$1"
   local model="$2"
@@ -4489,6 +4495,7 @@ const adapterReasoning = {
 };
 
 if (!adapterReasoning[adapter]) fail(`Unsupported harness adapter for reasoning mutation: ${adapter}`);
+if (mode === "allowed") { process.stdout.write(JSON.stringify(adapterReasoning[adapter].allowed)); process.exit(0); }
 if (mode === "set") {
   assertAllowed(adapterReasoning[adapter].allowed);
   setReasoning(adapterReasoning[adapter].build(effort));
@@ -4511,10 +4518,10 @@ try {
 
   if [[ "$mode" == "set" ]]; then
     echo "Updated harness reasoning default: $harness -> $effort"
-  else
+  elif [[ "$mode" == "unset" ]]; then
     echo "Reset harness reasoning default: $harness"
   fi
-  echo "Run 'ai-litellm sync' to regenerate derived configs where needed."
+  [[ "$mode" == "allowed" ]] || echo "Run 'ai-litellm sync' to regenerate derived configs where needed."
 }
 
 ai_litellm_harness_reasoning_set() {
@@ -4523,6 +4530,10 @@ ai_litellm_harness_reasoning_set() {
 
 ai_litellm_harness_reasoning_unset() {
   ai_litellm_harness_reasoning_update unset "$@"
+}
+
+ai_litellm_harness_reasoning_allowed_json() {
+  ai_litellm_harness_reasoning_update allowed "${1:-}"
 }
 
 ai_litellm_context_matrix() {
@@ -5929,12 +5940,13 @@ ai_litellm_cmd_harness() {
     launch)  ai_litellm_launch "$@" ;;
     reasoning)
       case "${1:-}" in
-        set)   shift; ai_litellm_harness_reasoning_set "$@" ;;
-        unset) shift; ai_litellm_harness_reasoning_unset "$@" ;;
-        *)     ai_litellm_harness_reasoning_table "$@" ;;
+        set)     shift; ai_litellm_harness_reasoning_set "$@" ;;
+        unset)   shift; ai_litellm_harness_reasoning_unset "$@" ;;
+        allowed) shift; ai_litellm_harness_reasoning_allowed_json "${1:-}" ;;
+        *)       ai_litellm_harness_reasoning_table "$@" ;;
       esac
       ;;
-    *) echo "Usage: ai-litellm harness list|info <name>|launch <name> [model] [args...]|reasoning [name]|reasoning set <name> <effort>|reasoning unset <name>" >&2; return 1 ;;
+    *) echo "Usage: ai-litellm harness list|info <name>|launch <name> [model] [args...]|reasoning [name]|reasoning set <name> <effort>|reasoning unset <name>|reasoning allowed <name>" >&2; return 1 ;;
   esac
 }
 
@@ -5967,15 +5979,16 @@ ai_litellm_cmd_model() {
     refresh-capabilities) ai_litellm_model_refresh_capabilities "$@" ;;
     reasoning)
       case "${1:-}" in
-        probe) shift; ai_litellm_model_reasoning_probe "$@" ;;
-        set)   shift; ai_litellm_model_reasoning_set "$@" ;;
-        unset) shift; ai_litellm_model_reasoning_unset "$@" ;;
-        *)     ai_litellm_deprecated "model reasoning" "reasoning matrix"; ai_litellm_model_reasoning_table "$@" ;;
+        probe)   shift; ai_litellm_model_reasoning_probe "$@" ;;
+        set)     shift; ai_litellm_model_reasoning_set "$@" ;;
+        unset)   shift; ai_litellm_model_reasoning_unset "$@" ;;
+        allowed) shift; ai_litellm_model_reasoning_allowed_json "${1:-}" ;;
+        *)       ai_litellm_deprecated "model reasoning" "reasoning matrix"; ai_litellm_model_reasoning_table "$@" ;;
       esac
       ;;
     probe)        ai_litellm_deprecated "model probe" "route probe"; ai_litellm_probe_routes "$@" ;;
     capabilities) ai_litellm_capabilities ;;
-    *) echo "Usage: ai-litellm model list|info [model]|limits [model]|refresh-capabilities [--apply|--json|--check]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|capabilities" >&2; return 1 ;;
+    *) echo "Usage: ai-litellm model list|info [model]|limits [model]|refresh-capabilities [--apply|--json|--check]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|reasoning allowed <model>|capabilities" >&2; return 1 ;;
   esac
 }
 
