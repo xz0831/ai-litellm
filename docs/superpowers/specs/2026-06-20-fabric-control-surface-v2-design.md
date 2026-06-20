@@ -112,10 +112,23 @@ TUI는 config를 직접 안 쓴다. 신규 backend 명령이 검증·기록·syn
 
 ## 11. 미해결 / 결정 필요 (구현 계획에서 확정)
 
-- 커맨드 레지스트리: 정적 큐레이션 목록 vs `ai-litellm` introspection 생성 — 정적+메타데이터로 시작(확인 게이팅 위해).
-- 팔레트 인자 폼의 깊이(자유 텍스트 vs 타입별 위젯).
-- 매핑 변경 후 `sync`를 자동으로 할지(프록시 재시작=중단) vs "config 변경됨 → sync 액션 제시"로 둘지 — 후자(확인 모달 경유)가 기본.
-- 테마: 직접 정의 vs Textual 내장 테마 커스터마이즈.
+- 커맨드 레지스트리: 정적 큐레이션 목록 vs `ai-litellm` introspection 생성 — 정적+메타데이터로 시작(확인 게이팅 위해). **→ P2 확정(§12).**
+- 팔레트 인자 폼의 깊이(자유 텍스트 vs 타입별 위젯). **→ P2 확정: 자유 텍스트 + usage 힌트(§12).**
+- 매핑 변경 후 `sync`를 자동으로 할지(프록시 재시작=중단) vs "config 변경됨 → sync 액션 제시"로 둘지 — 후자(확인 모달 경유)가 기본. *(P4에서 확정)*
+- 테마: 직접 정의 vs Textual 내장 테마 커스터마이즈. **→ P1에서 직접 정의 테마(`_FABRIC_THEME`)로 확정·구현·머지됨(PR #2).**
+
+## 12. P2 확정 설계 (브레인스토밍 2026-06-20 합의, P1 머지 후)
+
+P1(디자인+발견성)은 구현·리뷰·**머지 완료**(PR #2, 머지 커밋 `55cf688`). P2 커맨드 팔레트의 확정 사항:
+
+- **트리거:** `:` (주; mockup `:cmd`와 일치) + `ctrl+p` alias. `esc`/`:`로 닫기.
+- **UX:** `CommandPalette(ModalScreen)` — 상단 `Input` + 하단 필터 `ListView`. group+verb+label을 fuzzy/부분일치 필터, ↑/↓ 이동, Enter 선택. 무인자 명령=즉시 실행; 인자 필요 명령=입력창이 "인자 모드"로 전환하고 명령 **usage를 placeholder 힌트**로 표시 → 자유텍스트 입력 → Enter. *(타입별 위젯 등 rich 가이드 변경 UX는 P3/P4.)*
+- **게이트(단일 진실원천):** 실행 직전 **`safety.classify(full_argv)`로 등급 산출** → RESTART/BILLABLE/DESTRUCTIVE면 ConfirmModal(P1의 Cancel-first/과금-포커스 규칙 재사용), SAFE면 즉시. 팔레트와 맥락 액션 바가 같은 오라클을 공유해 등급 드리프트 불가(P1 하드닝의 `classify(argv)==grade` drift-guard와 동일 원리).
+- **실행/결과:** 기존 `ActionRunner` + `_run_action`의 게이트·async-offload 경로 **재사용**(로직 중복 금지) → 결과는 기존 `#results` 로그 패널로(이벤트 루프 비블로킹 유지).
+- **레지스트리:** `fabric_dash/commands.py`(신규)의 **정적 큐레이션 목록**. 각 항목 `{group, label, argv(베이스), takes_args, usage}` — **등급은 저장하지 않고 실행 시 classify로 도출.** 초기 구성은 **단일키가 없는 명령 위주로 발견성 극대화**(lifecycle start/stop/restart/sync, doctor, launch, 그리고 단일키 없는 mutating reasoning set/unset·key set 등). **registry-only**(자유 passthrough 없음 → 게이팅 안전 단순). 읽기 명령·패널 네비게이션은 P2 비목표(후속).
+- **안전:** 인자 모드 자유텍스트는 shell이 아니라 `shlex`로 **argv 리스트 분할**(injection 없음); 빈/잘못된 인자는 실행 전 usage 재표시(깨진 호출 방지).
+- **컴포넌트:** `commands.py`(레지스트리), `palette.py`(`CommandPalette` 모달), `app.py`(`:`/`ctrl+p` 바인딩 + `action_palette`).
+- **테스트(Pilot, venv, 실제 호출 0):** 열기/닫기, 필터 부분일치, 무인자 즉시 실행, 인자 모드+usage 힌트, mutating은 ConfirmModal 경유(게이트 회귀), classify 등급 산출, 결과 로그 반영, shlex 분할(injection 방지).
 
 ---
 
