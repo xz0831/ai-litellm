@@ -37,7 +37,7 @@ v1 `fabric`는 **읽기 위주 대시보드 + 라이프사이클 액션 몇 개*
 - **backend가 로직 소유, TUI는 control surface** — 모든 변경은 기존 또는 신규 `ai-litellm` 명령을 호출해 수행(TUI가 YAML/JSON을 직접 쓰지 않음). 신규 backend 명령은 doctor로 검증된다.
 - 읽기는 `--json` 표면(v1). 액션은 `ai-litellm <command>` 호출(v1 ActionRunner).
 - native harness 불가침 (위 §2).
-- 모든 위험(restart-causing)·과금(billable) 작업은 결과를 명시하는 확인 모달을 거친다(v1 ConfirmModal 패턴; 중단성=Cancel-포커스, 과금=Confirm-포커스).
+- 모든 위험(restart-causing)·과금(billable) 작업은 결과를 명시하는 확인 모달을 거친다(v1 ConfirmModal 패턴; 중단성·과금 모두 Cancel-포커스 — billable은 PR #2 경화에서 Cancel-우선으로 통일).
 
 ## 4. 전체 형태 (인터랙션 모델)
 

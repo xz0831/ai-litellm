@@ -188,7 +188,7 @@ Textual이 venv에 없을 때: `__main__.main()`이 `ModuleNotFoundError`를 잡
 |---|---|
 | `tests/test_client.py` | JSON 파싱, 실패 시 빈 컨테이너 |
 | `tests/test_safety.py` | classify 4등급, ACTIONS 레지스트리, case→risk 규약 |
-| `tests/test_actions_app.py` | ActionRunner 줄 단위 전달, confirm 게이트, Cancel-우선(RESTART/DESTRUCTIVE), safe 무모달 실행, launch hand-off(Confirm-포커스), destructive 모달 |
+| `tests/test_actions_app.py` | ActionRunner 줄 단위 전달, confirm 게이트, Cancel-우선(RESTART/DESTRUCTIVE/BILLABLE), safe 무모달 실행, launch hand-off(Cancel-우선), destructive 모달 |
 | `tests/test_app.py` | 부팅·헤더, harness 타깃 시딩, DataTable 렌더(nameless 행 충돌 회귀), 셀/키/proxy 색칠, footer 색 등급, 신규-사용자 힌트 |
 
 UI 테스트는 Textual `app.run_test()` + `pilot`으로 실제 키 입력을 구동하며, 주입된 가짜 runner/spawn으로 실제 바이너리 없이 돈다.
