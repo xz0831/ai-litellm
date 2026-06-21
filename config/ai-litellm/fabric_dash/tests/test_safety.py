@@ -11,6 +11,20 @@ def test_classify_restart_and_billable_and_safe():
     assert safety.classify(["proxy", "start"]) == safety.SAFE
     assert safety.classify(["proxy", "status"]) == safety.SAFE
 
+
+def test_classify_billable_edge_cases():
+    """Hardened BILLABLE detection (round-1 review):
+    - harness launch is billable (oracle parity with action_launch's gate)
+    - `route check <model>` with a trailing model arg (endswith missed it)
+    - `--probe-routes` flag token (membership of bare 'probe' missed it)
+    - `proxy` must NOT trip the 'probe' substring rule."""
+    assert safety.classify(["harness", "launch", "goose"]) == safety.BILLABLE
+    assert safety.classify(["route", "check", "GLM-5.2"]) == safety.BILLABLE
+    assert safety.classify(["route", "check"]) == safety.BILLABLE
+    assert safety.classify(["proxy", "doctor", "--probe-routes"]) == safety.BILLABLE
+    assert safety.classify(["proxy", "status"]) == safety.SAFE  # 'proxy' != 'probe'
+    assert safety.classify(["proxy", "start"]) == safety.SAFE
+
 def test_action_registry_marks_confirm():
     by_key = {a.key: a for a in safety.ACTIONS}
     # Convention: UPPERCASE = mutating (needs confirm), lowercase = safe.

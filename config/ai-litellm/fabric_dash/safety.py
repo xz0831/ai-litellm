@@ -15,7 +15,15 @@ def classify(argv: list) -> str:
     joined = " ".join(a)
     if a and a[0] == "uninstall":
         return DESTRUCTIVE
-    if "probe" in a or joined.endswith("route check"):
+    # harness launch makes billable provider requests; route it through the
+    # oracle so the launch gate (app.action_launch) can't silently diverge.
+    if a[:2] == ["harness", "launch"]:
+        return BILLABLE
+    # Billable probes: match any token containing "probe" (covers the bare
+    # `probe` verb and `--probe-routes`), and `route check <model>` for any
+    # trailing model arg (endswith missed `route check glm52`). Over-guarding
+    # is the safe direction for the shared oracle.
+    if any("probe" in t for t in a) or a[:2] == ["route", "check"]:
         return BILLABLE
     if joined in ("sync", "proxy sync") or joined.startswith("proxy restart") \
             or joined.startswith("proxy stop") or a[:1] == ["sync"]:
