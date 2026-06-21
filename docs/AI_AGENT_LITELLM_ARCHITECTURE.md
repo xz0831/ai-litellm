@@ -104,10 +104,11 @@ rg -n '^[[:space:]]*(model_catalog_json|model_context_window)[[:space:]]*=' ~/.c
 
 ```zsh
 ai-litellm proxy   status|start|stop|restart|logs [lines]|doctor [opts]
-ai-litellm harness list|info <name>|launch <name> [model] [args...]|reasoning [name]
+ai-litellm harness list|info <name>|launch <name> [model] [args...]|alias get <name>|alias set <harness> <tier> <model>|reasoning [name|allowed <name>|set <name> <effort>|unset <name>]
 ai-litellm runtime list|status [name]|doctor <name>
-ai-litellm model   list|info [model]|limits [model]|refresh-capabilities [opts]|reasoning [model]|capabilities
+ai-litellm model   list|info [model]|limits [model]|refresh-capabilities [opts]|reasoning [model|allowed <model>|set <model> <effort>|unset <model>]|capabilities
 ai-litellm route   list|info [model]|probe [model...]
+ai-litellm codex   facade get [--json]|facade set <facade> <source_model_name>
 ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]|doctor
 ai-litellm reasoning matrix [model]|probe <model> [effort]|doctor
 ai-litellm audit model-policy
