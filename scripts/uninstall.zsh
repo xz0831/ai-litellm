@@ -27,7 +27,6 @@ Default removal:
   - ~/.local/bin/ai-litellm
   - ~/.local/bin/claude-litellm
   - ~/.local/bin/codex-litellm
-  - ~/.local/bin/goose-litellm
   - ~/.local/bin/opencode-litellm
   - ~/.local/bin/openrouter-key-status
   - ~/.local/bin/litellm-master-key-status
@@ -37,7 +36,6 @@ With --legacy, also removes older spread-out wrapper paths:
   - ~/.config/ai-litellm
   - ~/.config/claude-litellm
   - ~/.config/codex-litellm
-  - ~/.config/goose-litellm
   - ~/.config/opencode-litellm
 
 It never removes native ~/.claude or ~/.codex.
@@ -158,7 +156,7 @@ assert_fabric_prefix_safe() {
 
 assert_fabric_prefix_safe
 
-for script in ai-litellm claude-litellm codex-litellm goose-litellm opencode-litellm openrouter-key-status litellm-master-key-status fabric; do
+for script in ai-litellm claude-litellm codex-litellm opencode-litellm openrouter-key-status litellm-master-key-status fabric goose-litellm; do
   run rm -f "$bin_dir/$script"
   for backup in "$bin_dir/$script".bak.*(N); do
     run rm -f "$backup"
@@ -177,7 +175,6 @@ if (( remove_legacy )); then
     "$HOME/.config/ai-litellm" \
     "$HOME/.config/claude-litellm" \
     "$HOME/.config/codex-litellm" \
-    "$HOME/.config/goose-litellm" \
     "$HOME/.config/opencode-litellm"
 fi
 

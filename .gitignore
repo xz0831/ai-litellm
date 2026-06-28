@@ -31,3 +31,4 @@ __FABRIC_HOME__/
 
 # Local scratch.
 .tmp/
+artifacts/

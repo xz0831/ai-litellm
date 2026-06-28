@@ -18,6 +18,18 @@
 }
 #body { height: 1fr; }
 
+#panel {
+    width: 1fr;
+    height: 1fr;
+}
+
+#panel-note {
+    height: 1;
+    background: $panel;
+    color: $secondary;
+    padding: 0 1;
+}
+
 Tree {
     width: 30;
     border: round $primary 50%;
@@ -51,7 +63,7 @@ Tree {
 }
 
 #results {
-    height: 8;
+    height: 5;
     border: round $primary 50%;
     border-title-color: $secondary;
     padding: 0 1;
@@ -139,3 +151,14 @@ TierMapModal { align: center middle; background: $background 60%; }
 #tier-box { width: 56; height: auto; padding: 1 2; background: $surface; border: round $primary; }
 #tier-title { margin-bottom: 1; color: $secondary; }
 #tier-list { height: auto; max-height: 14; }
+
+/* ── router intent modal: plan/explain/execute knobs ───────────────────*/
+RouterIntentModal { align: center middle; background: $background 60%; }
+#router-box { width: 66; height: auto; padding: 1 2; background: $surface; border: round $primary; }
+#router-title { margin-bottom: 1; color: $secondary; }
+#router-tokens { margin-bottom: 1; }
+#router-harness { margin-bottom: 1; }
+#router-model { margin-bottom: 1; }
+#router-prompt { margin-bottom: 1; }
+#router-billing-title { margin-top: 1; color: $secondary; }
+#router-billing { height: auto; max-height: 4; }

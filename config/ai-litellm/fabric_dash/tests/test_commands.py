@@ -6,6 +6,7 @@ def test_registry_excludes_secret_and_launch_commands():
     flat = [" ".join(c.argv) for c in COMMANDS]
     assert not any("key" in f and "set" in f for f in flat), "key set leaks secrets via log echo"
     assert not any("launch" in f for f in flat), "launch uses the special exit handoff, not the palette"
+    assert not any(f.startswith("router ") for f in flat), "router uses structured panel actions, not raw palette args"
 
 
 def test_registry_grades_resolve_via_classify():

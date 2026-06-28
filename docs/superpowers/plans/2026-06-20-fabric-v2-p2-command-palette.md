@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-06-29 supersession:** This is a historical implementation plan. The current TUI intentionally narrows the palette: `:` is the only command-palette trigger, `ctrl+p` is no longer bound, and Router plan/explain/dry-run/execute are excluded from the raw palette in favor of the Router panel's structured `p`/`v`/`t`/`E` actions. Router row selection now seeds the modal intent, and the internal router `score` is not shown in the primary table. See `docs/FABRIC_DASHBOARD.md` for the live contract.
+
 **Goal:** Add a `:` / `ctrl+p` command palette to the `fabric` TUI: fuzzy-search a curated `ai-litellm` command registry, supply args via a free-text form with a usage hint, gate mutating/billable commands through the existing confirm modal, and stream results to the log panel — so the user never has to memorize commands.
 
 **Architecture:** A custom `CommandPalette(ModalScreen)` over a static registry (`commands.py`). Selecting a command resolves a final argv (base argv + `shlex`-split free-text args), which the app runs through a SHARED `_run_argv` core extracted from the existing `_run_action` — so the palette reuses the exact gate (`safety.classify(argv)`) + async-offload + log path, with zero duplicated execution logic and one source of truth for risk grading.

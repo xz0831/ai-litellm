@@ -121,6 +121,8 @@ TUI는 config를 직접 안 쓴다. 신규 backend 명령이 검증·기록·syn
 
 ## 12. P2 확정 설계 (브레인스토밍 2026-06-20 합의, P1 머지 후)
 
+> **2026-06-29 supersession:** 이후 TUI 적대적 사용성 리뷰에서 palette 표면을 줄였다. 현재 구현의 커맨드 팔레트 트리거는 `:` 단독이며 `ctrl+p` alias는 제거됐다. Router plan/explain/dry-run/execute는 raw palette command가 아니라 Router 패널의 구조화 action(`p`/`v`/`t`/`E`)이 정본이다. Router table은 내부 `score`를 전면 노출하지 않고, highlighted row가 modal 기본 intent로 이어진다. 아래 P2 기록의 `ctrl+p` 및 broad palette 항목은 당시 계획/구현 기록이며 현재 정본은 `docs/FABRIC_DASHBOARD.md`를 따른다.
+
 P1(디자인+발견성)은 구현·리뷰·**머지 완료**(PR #2, 머지 커밋 `55cf688`). P2 커맨드 팔레트의 확정 사항:
 
 - **트리거:** `:` (주; mockup `:cmd`와 일치) + `ctrl+p` alias. `esc`/`:`로 닫기.

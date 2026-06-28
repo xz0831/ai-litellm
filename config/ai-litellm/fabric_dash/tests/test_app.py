@@ -14,6 +14,7 @@ def make_client():
         "ai-litellm key status --json": json.dumps({"openrouter": {"source": "keychain"}, "master": {"source": "keychain"}}),
         "ai-litellm runtime status --json": json.dumps([]),
         "ai-litellm reasoning matrix --json": json.dumps([]),
+        "ai-litellm router plan --json --estimated-input-tokens 1000 --no-billable": json.dumps({"selected": None, "candidates": []}),
     }
 
     def run(argv):
@@ -73,6 +74,7 @@ def make_client_with(overrides):
         "ai-litellm key status --json": json.dumps({}),
         "ai-litellm runtime status --json": json.dumps([]),
         "ai-litellm reasoning matrix --json": json.dumps([]),
+        "ai-litellm router plan --json --estimated-input-tokens 1000 --no-billable": json.dumps({"selected": None, "candidates": []}),
     }
     base.update(overrides)
 
@@ -113,7 +115,7 @@ async def test_invalid_harness_cells_render_red_check_marks():
     client = make_client_with({
         "ai-litellm harness list --json": json.dumps([
             {"name": "claude", "valid": True, "cliInstalled": True},
-            {"name": "goose", "valid": False, "cliInstalled": False},
+            {"name": "opencode", "valid": False, "cliInstalled": False},
         ]),
     })
     app = FabricApp(client=client)
@@ -126,10 +128,10 @@ async def test_invalid_harness_cells_render_red_check_marks():
         table = app.query_one("#data-table", DataTable)
         # columns: name, valid, cliInstalled
         valid_ok = table.get_cell_at((0, 1))     # claude valid=True
-        valid_bad = table.get_cell_at((1, 1))    # goose valid=False
+        valid_bad = table.get_cell_at((1, 1))    # opencode valid=False
         assert valid_ok.plain == "✓" and "green" in str(valid_ok.style)
         assert valid_bad.plain == "✗" and "red" in str(valid_bad.style)
-        cli_bad = table.get_cell_at((1, 2))      # goose cliInstalled=False
+        cli_bad = table.get_cell_at((1, 2))      # opencode cliInstalled=False
         assert cli_bad.plain == "✗" and "red" in str(cli_bad.style)
 
 
@@ -186,7 +188,7 @@ async def test_harness_row_key_with_index_suffix_resolves_to_name():
     client = make_client_with({
         "ai-litellm harness list --json": json.dumps([
             {"name": "claude", "valid": True},
-            {"name": "goose", "valid": True},
+            {"name": "opencode", "valid": True},
         ]),
     })
     app = FabricApp(client=client)
@@ -201,7 +203,7 @@ async def test_harness_row_key_with_index_suffix_resolves_to_name():
         table = app.query_one("#data-table", DataTable)
         table.move_cursor(row=1)
         await pilot.pause()
-        assert app._selected_harness == "goose"   # not "goose#1"
+        assert app._selected_harness == "opencode"   # not "opencode#1"
 
 
 @pytest.mark.asyncio
@@ -851,7 +853,7 @@ async def test_map_action_guarded_for_non_claude_and_other_panels():
     app = FabricApp(client=make_client())
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._selected = "harnesses"; app._selected_harness = "goose"   # neither claude nor codex (P4b)
+        app._selected = "harnesses"; app._selected_harness = "opencode"   # neither claude nor codex (P4b)
         await pilot.press("m"); await pilot.pause()
         from fabric_dash.tier_modal import TierMapModal
         assert not isinstance(app.screen, TierMapModal)                 # guarded
@@ -904,7 +906,7 @@ async def test_map_action_still_guards_other_harness():
     app = FabricApp(client=make_client())
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._selected = "harnesses"; app._selected_harness = "goose"   # neither claude nor codex
+        app._selected = "harnesses"; app._selected_harness = "opencode"   # neither claude nor codex
         await pilot.press("m"); await pilot.pause()
         from fabric_dash.tier_modal import TierMapModal
         assert not isinstance(app.screen, TierMapModal)
@@ -987,3 +989,243 @@ async def test_tree_node_selection_renders_panel_via_worker():
         table = app.query_one("#data-table", DataTable)
         assert table.display is True and table.row_count >= 1
         assert app._selected_harness == "claude"   # first harness seeded as launch target
+
+
+def _router_payload():
+    return {
+        "selected": {
+            "harness": "claude",
+            "model": "Qwen3.6-27B-omlx",
+            "sourceModel": "Qwen3.6-27B-omlx",
+            "provider": "local",
+            "local": True,
+            "billable": False,
+            "effectiveInput": 114688,
+            "score": 90.0,
+            "reasons": ["local route avoids provider billing"],
+            "risks": [],
+        },
+        "candidates": [
+            {
+                "harness": "claude",
+                "model": "Qwen3.6-27B-omlx",
+                "sourceModel": "Qwen3.6-27B-omlx",
+                "provider": "local",
+                "local": True,
+                "billable": False,
+                "effectiveInput": 114688,
+                "score": 90.0,
+                "reasons": ["local route avoids provider billing"],
+                "risks": [],
+            }
+        ],
+        "candidateCount": 1,
+        "rejectedCount": 2,
+    }
+
+
+def _router_payload_two_candidates():
+    payload = _router_payload()
+    second = {
+        "harness": "codex",
+        "model": "gpt-5.5",
+        "sourceModel": "gpt-5.5",
+        "provider": "local",
+        "local": True,
+        "billable": False,
+        "effectiveInput": 200000,
+        "score": 80.0,
+        "reasons": ["local route avoids provider billing"],
+        "risks": [],
+    }
+    payload["candidates"] = [payload["candidates"][0], second]
+    payload["candidateCount"] = 2
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_router_panel_renders_default_plan_candidates():
+    client = make_client_with({
+        "ai-litellm router plan --json --estimated-input-tokens 1000 --no-billable": json.dumps(_router_payload()),
+    })
+    app = FabricApp(client=client)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "router"
+        await app.show_panel("router")
+        await pilot.pause()
+        from textual.widgets import DataTable, Static
+        table = app.query_one("#data-table", DataTable)
+        assert table.display is True
+        assert app.query_one("#content", Static).display is False
+        note = app.query_one("#panel-note", Static)
+        assert note.display is True
+        note_text = str(note.content)
+        assert "no-billable" in note_text
+        assert "estimated input 1000" in note_text
+        assert "selected claude Qwen3.6-27B-omlx" in note_text
+        assert table.row_count == 1
+        column_labels = [str(col.label) for col in table.ordered_columns]
+        assert "Score" not in column_labels
+        assert str(table.get_cell_at((0, 0))) == "*"  # selected route marker
+        assert str(table.get_cell_at((0, 1))) == "claude"
+        assert str(table.get_cell_at((0, 2))) == "Qwen3.6-27B-omlx"
+
+
+@pytest.mark.asyncio
+async def test_router_row_selection_seeds_execute_intent():
+    payload = _router_payload_two_candidates()
+    client = make_client_with({
+        "ai-litellm router plan --json --estimated-input-tokens 1000 --no-billable": json.dumps(payload),
+    })
+    seen = {}
+    def spawn(argv, stdin_input=None):
+        seen["argv"] = argv
+        seen["stdin"] = stdin_input
+        return (0, ['{"dryRun":true}'])
+
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=client, runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "router"
+        await app.show_panel("router")
+        await pilot.pause()
+        from textual.widgets import DataTable
+        table = app.query_one("#data-table", DataTable)
+        table.move_cursor(row=1)
+        await pilot.pause()
+        assert app._selected_router_intent["preferred_harness"] == "codex"
+        assert app._selected_router_intent["preferred_model"] == "gpt-5.5"
+        await pilot.press("t")
+        await pilot.pause()
+        await pilot.press("enter")  # tokens -> harness
+        await pilot.press("enter")  # prefilled harness -> model
+        await pilot.press("enter")  # prefilled model -> prompt
+        for ch in "hello":
+            await pilot.press(ch)
+        await pilot.press("enter")  # prompt -> billing
+        await pilot.press("enter")  # no-billable
+        await pilot.pause()
+        assert seen["stdin"] == "hello"
+        assert seen["argv"] == [
+            "ai-litellm", "router", "execute", "--json",
+            "--estimated-input-tokens", "1000", "--no-billable",
+            "--preferred-harness", "codex", "--preferred-model", "gpt-5.5",
+            "--prompt-file", "-", "--dry-run",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_router_plan_action_updates_panel_from_intent_modal():
+    seen = []
+    payload = _router_payload()
+    plan_calls = 0
+    def run(argv):
+        nonlocal plan_calls
+        seen.append(argv)
+        key = " ".join(argv)
+        if key == "ai-litellm router plan --json --estimated-input-tokens 1000 --no-billable":
+            plan_calls += 1
+            return (0, json.dumps(payload if plan_calls > 1 else {"selected": None, "candidates": []}))
+        return (0, data_for_basic(argv))
+
+    def data_for_basic(argv):
+        joined = " ".join(argv)
+        table = {
+            "ai-litellm proxy status --json": json.dumps({"health": "ok", "configCurrency": "current"}),
+            "ai-litellm model list --json": json.dumps([]),
+            "ai-litellm model limits --json": json.dumps([]),
+            "ai-litellm harness list --json": json.dumps([]),
+            "ai-litellm key status --json": json.dumps({}),
+            "ai-litellm runtime status --json": json.dumps([]),
+            "ai-litellm reasoning matrix --json": json.dumps([]),
+        }
+        return table.get(joined, "[]")
+
+    app = FabricApp(client=FabricClient(runner=run))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "router"
+        await app.show_panel("router")
+        await pilot.press("p")
+        await pilot.pause()
+        from fabric_dash.router_modal import RouterIntentModal
+        assert isinstance(app.screen, RouterIntentModal)
+        await pilot.press("enter")  # tokens default -> harness
+        await pilot.press("enter")  # harness -> model
+        await pilot.press("enter")  # model -> billing
+        await pilot.press("enter")  # no-billable
+        await pilot.pause()
+        from textual.widgets import DataTable
+        table = app.query_one("#data-table", DataTable)
+        assert table.display is True and table.row_count == 1
+        assert str(table.get_cell_at((0, 2))) == "Qwen3.6-27B-omlx"
+        assert ["ai-litellm", "router", "plan", "--json", "--estimated-input-tokens", "1000", "--no-billable"] in seen
+
+
+@pytest.mark.asyncio
+async def test_router_dry_run_sends_prompt_via_stdin_not_argv():
+    seen = {}
+    def spawn(argv, stdin_input=None):
+        seen["argv"] = argv
+        seen["stdin"] = stdin_input
+        return (0, ['{"dryRun":true}'])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "router"
+        await pilot.press("t")
+        await pilot.pause()
+        from fabric_dash.router_modal import RouterIntentModal
+        assert isinstance(app.screen, RouterIntentModal)
+        await pilot.press("enter")  # tokens default -> harness
+        await pilot.press("enter")  # harness -> model
+        await pilot.press("enter")  # model -> prompt
+        for ch in "hello":
+            await pilot.press(ch)
+        await pilot.press("enter")  # prompt -> billing
+        await pilot.press("enter")  # no-billable
+        await pilot.pause()
+        assert seen["stdin"] == "hello"
+        assert "hello" not in seen["argv"]
+        assert seen["argv"] == [
+            "ai-litellm", "router", "execute", "--json",
+            "--estimated-input-tokens", "1000", "--no-billable",
+            "--prompt-file", "-", "--dry-run",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_router_execute_is_confirm_gated_and_can_confirm_billable():
+    seen = {}
+    def spawn(argv, stdin_input=None):
+        seen["argv"] = argv
+        seen["stdin"] = stdin_input
+        return (0, ['{"ready":true}'])
+    from fabric_dash.actions import ActionRunner
+    app = FabricApp(client=make_client(), runner=ActionRunner(spawn=spawn))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._selected = "router"
+        await pilot.press("E")
+        await pilot.pause()
+        await pilot.press("enter")  # tokens default -> harness
+        await pilot.press("enter")  # harness -> model
+        await pilot.press("enter")  # model -> prompt
+        for ch in "run":
+            await pilot.press(ch)
+        await pilot.press("enter")  # prompt -> billing
+        await pilot.press("down")   # allow-billable
+        await pilot.press("enter")
+        await pilot.pause()
+        from fabric_dash.modal import ConfirmModal
+        assert isinstance(app.screen, ConfirmModal)
+        assert seen == {}
+        await pilot.press("tab")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert seen["stdin"] == "run"
+        assert "--confirm-billable" in seen["argv"]
+        assert "run" not in seen["argv"]

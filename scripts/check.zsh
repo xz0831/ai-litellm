@@ -25,6 +25,8 @@ python3 -m py_compile "$repo_root/scripts/verify_litellm_token_clamp.py"
 python3 -m py_compile "$repo_root/scripts/verify_tool_call_fidelity.py"
 python3 -m py_compile "$repo_root/config/ai_litellm_callbacks/output_clamp.py"
 python3 -m py_compile "$repo_root/scripts/verify_budget_consistency.py"
+python3 -m compileall -q "$repo_root/config/ai-litellm/router_core"
+PYTHONPATH="$repo_root/config/ai-litellm" python3 -m unittest discover -s "$repo_root/config/ai-litellm/router_core/tests" -q
 
 # Differential test: the four token-budget implementations (Node + 2 Ruby copies
 # in lib.zsh, Python in output_clamp.py) must agree on every comparable quantity
@@ -65,6 +67,7 @@ REAL_HOME="$real_home" HOME="$tmp_home" zsh -fc '
 set -e
 prefix="$HOME/.local/share/ai-litellm-fabric"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/lib.zsh"
+test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/router_core/__main__.py"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/context-observations.json"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/litellm_config.yaml"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai_litellm_callbacks/output_clamp.py"
@@ -83,6 +86,19 @@ else
   echo "note: skipping fabric_dash module check (dash venv/textual unavailable in check env)" >&2
 fi
 "$HOME/.local/bin/ai-litellm" --help >/dev/null
+"$HOME/.local/bin/ai-litellm" router schema --json >/dev/null
+"$HOME/.local/bin/ai-litellm" router snapshot --json >/dev/null
+"$HOME/.local/bin/ai-litellm" router plan --json --estimated-input-tokens 1000 >/dev/null
+"$HOME/.local/bin/ai-litellm" router plan --json --estimated-input-tokens 1000 --no-billable >/dev/null
+"$HOME/.local/bin/ai-litellm" router execute --json --dry-run --estimated-input-tokens 1000 >/dev/null
+"$HOME/.local/bin/ai-litellm" router execute --json --dry-run --prompt "Reply with exactly OK" --estimated-input-tokens 1000 >/dev/null
+set +e
+OPENROUTER_API_KEY=CHECK_OPENROUTER "$HOME/.local/bin/ai-litellm" router execute --json --prompt "Reply with exactly OK" --estimated-input-tokens 1000 >"$HOME/router-billable-refusal.json" 2>/dev/null
+router_refusal_rc="$?"
+set -e
+test "$router_refusal_rc" = "3"
+grep -q "confirm-billable" "$HOME/router-billable-refusal.json"
+grep -q "billing.confirmation_required" "$HOME/router-billable-refusal.json"
 ! grep -R "__HOME__\\|__FABRIC_HOME__" "$prefix/config" "$prefix/docs" >/dev/null
 grep -q "AI_LITELLM_FABRIC_HOME=" "$HOME/.local/bin/ai-litellm"
 grep -q "exec.*bin/ai-litellm" "$HOME/.local/bin/ai-litellm"
@@ -98,11 +114,11 @@ test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-
 # Un-rendered placeholder guard (run-from-checkout footgun): a literal
 # __FABRIC_HOME__ path must be refused; the rendered prefix path must pass.
 # Non-vacuous: if the guard is missing, the positive assertion below fails.
-if ai_litellm_assert_rendered_path "__FABRIC_HOME__/state/goose-litellm" "test" 2>/dev/null; then
+if ai_litellm_assert_rendered_path "__FABRIC_HOME__/state/opencode-litellm" "test" 2>/dev/null; then
   echo "ai_litellm_assert_rendered_path accepted an un-rendered path" >&2
   exit 1
 fi
-ai_litellm_assert_rendered_path "$prefix/state/goose-litellm" "test"
+ai_litellm_assert_rendered_path "$prefix/state/opencode-litellm" "test"
 runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown local-omlx-gemma4-12b)"
 [[ "$runtime_routes_dry" == *"MarkItDown-omlx -> openai/MarkItDown"* ]]
 # Gemma4-12B-omlx registry entry serves openai/local-omlx-gemma4-12b, so the
@@ -190,7 +206,7 @@ echo "ok: model list/limits --json"
 # ── --json contract: harness list + key status ────────────────────────────────
 json_check "harness list --json" "$HOME/.local/bin/ai-litellm" harness list --json
 hl_json="$("$HOME/.local/bin/ai-litellm" harness list --json 2>/dev/null)"
-print -r -- "$hl_json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const names=a.map(x=>x.name).sort().join(\",\");if(names!==\"claude,codex,goose,opencode\"){console.error(\"unexpected harnesses: \"+names);process.exit(1)}for(const h of a){for(const k of [\"adapter\",\"valid\",\"cliInstalled\"]) if(!(k in h)){console.error(\"missing \"+k);process.exit(1)}}})" \
+print -r -- "$hl_json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const names=a.map(x=>x.name).sort().join(\",\");if(names!==\"claude,codex,opencode\"){console.error(\"unexpected harnesses: \"+names);process.exit(1)}for(const h of a){for(const k of [\"adapter\",\"valid\",\"cliInstalled\"]) if(!(k in h)){console.error(\"missing \"+k);process.exit(1)}}})" \
   || { echo "FAIL: harness list --json shape"; exit 1; }
 json_check "key status --json" "$HOME/.local/bin/ai-litellm" key status --json
 ks_json="$("$HOME/.local/bin/ai-litellm" key status --json 2>/dev/null)"
@@ -463,9 +479,6 @@ print -r -- "{\"model\":\"~anthropic/claude-opus-latest\"}" > "$lint_root/settin
 lint_warning="$(ai_litellm_claude_shared_settings_lint claude "$lint_root" 2>&1)"
 [[ "$lint_warning" == *"warning"* ]]
 rm -rf "$lint_root"
-! ai_litellm_launch_env_injector goose configure >/dev/null 2>&1
-goose_blocked="$(ai_litellm_launch_env_injector goose configure 2>&1 || true)"
-[[ "$goose_blocked" == *"blocked"* ]]
 source "$prefix/config/claude-litellm/shell.zsh"
 test "$(_claude_litellm_default_mode)" = "proxy"
 test "$(_claude_litellm_direct_default_request)" = "opus"
@@ -581,9 +594,6 @@ mv "$caps_settings.tmp" "$caps_settings"
 ai_litellm_model_limits Qwen3.6-27B-omlx >/dev/null
 runtime_routes_dedup="$(ai_litellm_runtime_routes_write omlx 1 Qwen3.6-27B-4bit)"
 [[ -z "$runtime_routes_dedup" ]]  # dedup must yield NO route for an upstream a registry entry already serves
-! ai_litellm_launch_env_injector goose DeepSeek-V4-Pro-openrouter configure >/dev/null 2>&1
-goose_model_blocked="$(ai_litellm_launch_env_injector goose DeepSeek-V4-Pro-openrouter configure 2>&1 || true)"
-[[ "$goose_model_blocked" == *"blocked"* ]]
 "$HOME/.local/bin/claude-litellm" --status >/dev/null
 source "$prefix/config/codex-litellm/shell.zsh"
 test "$(_codex_litellm_resolve_model openrouter/deepseek/deepseek-v4-pro)" = "gpt-5.4"
@@ -637,7 +647,7 @@ for tool in node jq ruby python3 curl rg grep sed awk shasum perl mkdir chmod st
 done
 old_path="$PATH"
 PATH="$tool_dir:/usr/bin:/bin:/usr/sbin:/sbin"
-for harness in claude codex goose opencode; do
+for harness in claude codex opencode; do
   cli="$(ai_litellm_harness_json "$harness" command)"
   if command -v "$cli" >/dev/null 2>&1; then
     echo "Expected $cli to be absent from restricted PATH" >&2

@@ -282,7 +282,7 @@ hl_json="$(ai-litellm harness list --json 2>/dev/null)"
 print -r -- "$hl_json" | node -e '
 let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s);
 const names=a.map(x=>x.name).sort().join(",");
-if(names!=="claude,codex,goose,opencode"){console.error("unexpected harnesses: "+names);process.exit(1)}
+if(names!=="claude,codex,opencode"){console.error("unexpected harnesses: "+names);process.exit(1)}
 for(const h of a){for(const k of ["adapter","valid","cliInstalled"]) if(!(k in h)){console.error("missing "+k);process.exit(1)}}})' \
   || { echo "FAIL: harness list --json shape"; exit 1; }
 json_check "key status --json" ai-litellm key status --json

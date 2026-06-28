@@ -6,10 +6,14 @@ from textual.widgets import Static
 
 _KEYS = [
     ("q", "quit"), ("r", "refresh"), ("?", "this help"),
-    (":", "command palette"), ("ctrl+p", "command palette"),
+    (":", "command palette"),
     ("s", "start proxy"), ("S", "sync (restart proxy)"),
     ("R", "restart proxy"), ("X", "stop proxy"), ("d", "doctor (full battery)"),
     ("l", "launch selected harness (billable)"),
+    ("p", "router plan (Router panel)"),
+    ("v", "router explain (Router panel)"),
+    ("t", "router execute dry-run (Router panel)"),
+    ("E", "router execute (Router panel, billable gate)"),
     ("e", "set reasoning effort (model/harness)"),
     ("k", "set API key (masked)"),
     ("m", "remap tier/facade (claude/codex, Harnesses)"),

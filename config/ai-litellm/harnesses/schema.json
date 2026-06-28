@@ -25,7 +25,6 @@
       "enum": [
         "claude-code",
         "codex-cli",
-        "env-injector",
         "opencode-cli"
       ]
     },

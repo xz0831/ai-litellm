@@ -1,6 +1,6 @@
 # Design Rationale — 왜 이렇게 만들었는가
 
-Last updated: 2026-06-20
+Last updated: 2026-06-29
 
 이 문서는 ai-litellm-fabric의 모든 비자명한 설계 결정에 대해 **무엇을, 왜, 어떤 대안을 기각했고, 어디서 반박할 수 있는지**를 기록한다. 운영 절차는 `AI_AGENT_LITELLM_ARCHITECTURE.md`(정본 가이드)가, 경계 계약은 `README.md`가, 강제는 `scripts/check.zsh`와 doctor가 맡는다. 이 문서의 역할은 그 셋이 답하지 않는 단 하나의 질문 — "왜?" — 이다.
 
@@ -134,7 +134,7 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 **1층 — 능력치(x-limits 앵커)** [기록]: underlying 모델당 앵커 1개, 모든 surface는 `model_info: *alias` 참조(인라인 숫자 금지, doctor가 강제). 여러 facade가 같은 백엔드로 수렴하므로(DeepSeek 하나가 3개 surface를 서빙) 앵커 1개 수정이 전부를 갱신한다. 모든 수치는 출처 라벨(provider/observed/owned-policy)을 달아야 한다 — C6 감사가 "추측 숫자와 프로바이더 공표 숫자가 구분 불가"한 상태를 부정직으로 판정했기 때문. `x-limits`가 LiteLLM이 무시하는 최상위 키인 것은 의도다: LiteLLM이 이미 읽는 파일 안에 fabric 소유 정책이 동거하면서 앵커가 model_info와 같은 문서에서 해석된다. **discovered route만 인라인 model_info를 갖는 예외**는: 그 숫자들이 능력치가 아니라 런타임 정책(보수 기본값/override)이고, 관리 블록이 통째로 재생성되기 때문이다.
 
-**2층 — harness 예약(adapterConfig.outputReservation)** [기록]: 예약은 모델 능력치가 아니라 **harness 정책**이다 — 같은 모델에 두 harness가 다르게 예약할 수 있고, 능력치 메타데이터(OpenCode/Goose가 파생하는)를 오염시키면 안 되므로 x-limits가 아닌 descriptor에 산다. 32000/8192/32768 삼중값: 32000은 C5 감사의 표준화 권고(관측된 codex 암묵 출력 ≈22K에 여유를 더한 값), minimumInput 32768은 입력 예산 바닥. 파생물: claude proxy의 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=예약`/`AUTO_COMPACT_WINDOW=유효입력`(컴팩션이 프로바이더 거절보다 먼저 발화하도록), codex 카탈로그의 윈도우 축소(codex는 출력 예약 레버가 **없어서** — model_max_output_tokens는 파싱되고 무시됨이 검증됨 — 믿음 형성이 예약을 대신한다), goose/opencode env 주입. 로컬 모델은 카탈로그 축소에서 면제(이미 정책 캡이 훨씬 낮아 이중 낭비).
+**2층 — harness 예약(adapterConfig.outputReservation)** [기록]: 예약은 모델 능력치가 아니라 **harness 정책**이다 — 같은 모델에 두 harness가 다르게 예약할 수 있고, 능력치 메타데이터(OpenCode가 파생하는)를 오염시키면 안 되므로 x-limits가 아닌 descriptor에 산다. 32000/8192/32768 삼중값: 32000은 C5 감사의 표준화 권고(관측된 codex 암묵 출력 ≈22K에 여유를 더한 값), minimumInput 32768은 입력 예산 바닥. 파생물: claude proxy의 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=예약`/`AUTO_COMPACT_WINDOW=유효입력`(컴팩션이 프로바이더 거절보다 먼저 발화하도록), codex 카탈로그의 윈도우 축소(codex는 출력 예약 레버가 **없어서** — model_max_output_tokens는 파싱되고 무시됨이 검증됨 — 믿음 형성이 예약을 대신한다), opencode env 주입. 로컬 모델은 카탈로그 축소에서 면제(이미 정책 캡이 훨씬 낮아 이중 낭비).
 
 **3층 — gateway 강제(clamp + cost guardrail)** [기록+실증]: `async_pre_call_deployment_hook` 커스텀 콜백인 이유는 측정이다(verify_litellm_token_clamp.py, LiteLLM 1.81.14): `litellm_params.max_tokens`는 더 큰 클라이언트 값을 못 낮추고, `modify_params:true`는 max_tokens만 잡고 max_completion_tokens(codex의 responses 경로!)를 놓친다. 오직 이 훅만 둘 다 낮추며, deployment 선택 후라 model_info 인지 캡이 가능하다. clamp는 **lower-only**(키 부재 시 주입하지 않음 — 예약 도입은 harness 층의 일). guardrail은 청구서 등급이 아니라 사전 차단이다($1.06짜리 단일 요청 실측 + `--max-budget-usd`가 이 경로에서 하드 리밋이 아님이 확인된 후 만들어짐). 순서는 clamp→guardrail(가드레일이 클램프 후 요청을 가격하도록). doctor는 두 정책의 `enabled:false`를 설정 선택이 아니라 **고장**으로 취급한다 — 방어층은 공격이 아니라 "임시로 꺼둔 것"으로 죽는다.
 
@@ -187,7 +187,7 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 - **claude — 공유 환경 + 격리 세션** (§2): config dir가 알갱이 단위라 symlink 절단선이 가능했다.
 - **codex — 완전 격리 CODEX_HOME.** [기록] 세 가지가 claude식 처리를 막는다: CODEX_HOME이 monolithic(세션/메모리/설정이 한 뿌리 — 알갱이 절단 불가), memories sqlite에 provider 컬럼이 없음(약한 모델 메모리를 사후 필터링 불가), generator가 config.toml을 통째 교체(공유 시 native 파괴). 미래 경로는 profile-v2인데, codex 0.138.0에서 **미명시 키가 native의 `approval=never`/`danger-full-access`를 상속하는 함정이 실증**되어 있다 — profile 파일은 approval_policy/sandbox_mode/model_catalog_json을 반드시 명시해야 한다. 생성 config가 on-request/workspace-write/home-untrusted로 고정되는 것은 같은 원칙(약한·미지 모델은 관대한 모드를 상속받지 않는다)의 codex 버전이다. `shell_environment_policy inherit="core"`는 모델이 실행하는 셸 명령이 master key를 못 읽게 하는 장치다.
-- **goose — env-injector만, 생성 파일 없음.** [기록] goose는 provider 설정을 env로 받으므로 주입이 본질적으로 비파괴적이다. 단 `goose configure`는 wizard가 native config.yaml에 litellm provider를 영구 기록하므로 blockedSubcommands로 차단한다(모델-선행 호출형 `goose-litellm <model> configure`까지 잡도록 검사가 모델 소비 **후**에 위치 — 한 번 우회당한 뒤 수정된 이력이 check에 양 형태로 박제됨). `GOOSE_DISABLE_SESSION_NAMING=true`는 세션 제목 하나를 위해 게이트웨이 완료 호출 1회를 몰래 쓰는 것을 끄는 것이다[재구성 — 상류 문서로 메커니즘 확인, repo 내 동기 기록은 없음].
+- **goose — retired 2026-06-28.** [기록] 이전 env-injector shim은 지원 대상에서 제외했다. 현 설치/제거 스크립트는 기존 설치본의 shim, descriptor, state를 지우는 legacy cleanup만 유지한다.
 - **opencode — OPENCODE_CONFIG 파일 포인터 + XDG 리디렉션.** [기록] config 경로를 env로 받으므로 생성 파일이 native 트리 밖에 있으면 끝. per-model limit 블록은 opencode의 32000 절단 기본값을 교정한다.
 
 ---
@@ -198,7 +198,7 @@ codex는 자기 카탈로그로 모델을 검증·구동한다: 카탈로그는 
 
 **결정: read-then-act 분리 — 기본은 read-only, mutating 액션은 확인 모달로 게이트한다. 중단성(RESTART)·파괴적(DESTRUCTIVE)·과금성(BILLABLE) 등급은 모두 Cancel-우선 ConfirmModal이다(billable launch도 PR #2 경화에서 Cancel-우선으로 통일 — `_GUARDED`에 셋 다 포함).** [실증]
 
-`safety.classify(argv)`(`safety.py`)가 액션을 4계급으로 가른다: `SAFE`(start/doctor — 자유 실행), `RESTART`, `BILLABLE`, `DESTRUCTIVE`. `ACTIONS` 테이블에서 SAFE인 start/doctor는 `needs_confirm=False`로 바로 돌고, sync/restart/stop은 `RESTART`로 ConfirmModal 뒤에 선다. 자동 갱신(auto-refresh)은 **엄격히 read-only**다 — 화면을 새로 그리는 폴링이 절대 mutating 명령을 부르지 않는다. 그 분리의 강제 지점은 `FabricClient`(`client.py`)가 *읽기 표면만* 노출한다는 것이다: `proxy_status`/`model_list`/`harness_list`/`reasoning_matrix` 등 `--json` read 명령만 메서드로 있고(`route_list`/`context_matrix`는 round-1 리뷰에서 죽은 코드로 제거), 실행 측은 별도 `ActionRunner`(`actions.py`)에 격리됐다. 안전 기본값은 *구조*로 보장된다 — read 경로에는 mutate 메서드가 아예 없다.
+`safety.classify(argv)`(`safety.py`)가 액션을 4계급으로 가른다: `SAFE`(start/doctor/read-only router plan/explain/dry-run — 자유 실행), `RESTART`, `BILLABLE`, `DESTRUCTIVE`. `ACTIONS` 테이블에서 SAFE인 start/doctor는 `needs_confirm=False`로 바로 돌고, sync/restart/stop은 `RESTART`로 ConfirmModal 뒤에 선다. Router execute와 harness launch는 BILLABLE gate를 탄다. 자동 갱신(auto-refresh)은 **엄격히 read-only**다 — 화면을 새로 그리는 폴링이 절대 mutating 명령을 부르지 않는다. 그 분리의 강제 지점은 `FabricClient`(`client.py`)가 *읽기/plan 표면만* 노출한다는 것이다: `proxy_status`/`model_list`/`harness_list`/`reasoning_matrix`/`router_plan` 등 `--json` read/plan 명령만 메서드로 있고(`route_list`/`context_matrix`는 round-1 리뷰에서 죽은 코드로 제거), 실행 측은 별도 `ActionRunner`(`actions.py`)에 격리됐다. 안전 기본값은 *구조*로 보장된다 — read 경로에는 실행 메서드가 없다.
 
 **결정: `FabricClient`는 실패 시 traceback이 아니라 빈 컨테이너를 반환한다(empty-on-failure), runner는 주입 가능하다.** [실증]
 
@@ -216,7 +216,15 @@ TUI가 소비하는 계약(proxy status, model list/limits, route list, runtime 
 
 **결정: 품질 보증은 Textual `run_test()` 파일럿으로 *렌더된* 위젯 트리를 검증한다(SVG 스냅샷 diff 아님).** [실증]
 
-테스트는 `async with app.run_test() as pilot`로 실제 앱을 띄워 `pilot.press(...)`/`show_panel(...)` 후 렌더 결과를 단언한다 — 예: `query_one("#status").content`에 "claude"가 있는지, Models 패널이 텍스트 래핑이 아니라 진짜 `DataTable`로 6컬럼을 렌더하는지(`test_app.py`), 잘못된 harness 셀이 회색이 아니라 빨강으로 신호하는지. 즉 "스냅샷 리뷰"는 *렌더된 출력*을 검사하는 것이지 SVG 이미지 비교 회귀(pytest-textual-snapshot류)가 아니다. 이 루프로 외부 UX 리뷰어 점검(score 90)을 통과시켰다. CI 잡 `dash-tests`(커밋 690c009)가 textual을 프로비저닝하고 이 테스트를 돌려 대시보드 회귀가 *조용히* CI를 통과하지 못하게 막는다 — venv가 없으면 check.zsh는 모듈 임포트 검사를 skip하므로(L78–83), CI의 전용 잡이 그 빈틈을 메운다.
+테스트는 `async with app.run_test() as pilot`로 실제 앱을 띄워 `pilot.press(...)`/`show_panel(...)` 후 렌더 결과를 단언한다 — 예: `query_one("#status").content`에 "claude"가 있는지, Models/Router 패널이 텍스트 래핑이 아니라 진짜 `DataTable`을 렌더하는지(`test_app.py`), 잘못된 harness 셀이 회색이 아니라 빨강으로 신호하는지, router dry-run/execute prompt가 argv가 아니라 stdin으로만 흐르는지. 즉 "스냅샷 리뷰"는 *렌더된 출력*을 검사하는 것이지 SVG 이미지 비교 회귀(pytest-textual-snapshot류)가 아니다. 이 루프로 외부 UX 리뷰어의 화면 품질 리뷰 점수 90을 통과시켰다. 이 90은 Router 후보의 내부 `score`가 아니다. CI 잡 `dash-tests`(커밋 690c009)가 textual을 프로비저닝하고 이 테스트를 돌려 대시보드 회귀가 *조용히* CI를 통과하지 못하게 막는다 — venv가 없으면 check.zsh는 모듈 임포트 검사를 skip하므로(L78–83), CI의 전용 잡이 그 빈틈을 메운다.
+
+**결정: Router 패널은 internal score를 숨기고, 현재 intent와 highlighted route를 실행 의미에 연결한다.** [실증, 2026-06-29]
+
+`router_core`의 `score`는 품질 점수도 성공 확률도 아니라 후보 정렬용 내부 휴리스틱이다(기본 50점에 context headroom, local/non-billable, 기본 Claude opus, preferred harness/model 등을 더한다). 이를 TUI primary table에 `Score`로 노출하면 사용자는 "모델 품질 90점"으로 읽기 쉽다. 그래서 Router table은 `chosen/harness/model/provider/local/billable/effectiveInput/reasons/risks`만 보여주고, 현재 계획의 조건은 `panel-note`에 `intent: no-billable`, `estimated input`, `selected <harness> <model>`로 별도 표시한다. 또 행을 고른 뒤 `t`/`E`를 누르면 그 행이 실행될 것이라는 기대가 자연스럽다. 이전 구현은 row highlight를 실행 intent에 반영하지 않고 새 modal 입력으로 재계획했기 때문에 오해 가능성이 컸다. 현재는 highlighted route를 `preferred-harness`/`preferred-model`로 modal 기본값에 넣어 `p`/`v`/`t`/`E`가 모두 같은 선택 의미를 공유한다. `test_router_panel_renders_default_plan_candidates`는 `Score` 컬럼 부재와 intent note를, `test_router_row_selection_seeds_execute_intent`는 선택 row가 dry-run argv로 흘러가는 것을 고정한다.
+
+**결정: command palette는 `:` 하나만 남기고, raw Router commands는 제외한다.** [실증, 2026-06-29]
+
+Palette는 discovery/escape hatch로는 유용하지만, Router에는 이미 typed modal이 있다. Raw `router plan/explain/execute`를 palette에 남기면 prompt/stdin, billable intent, row selection 의미가 분산되고, 사람이 기대하는 "선택한 row를 실행" 모델과 충돌한다. 따라서 Router는 Router 패널 action(`p`/`v`/`t`/`E`)이 정본이고, palette registry는 router group을 제외한다. `ctrl+p` alias도 제거했다. Textual 내장 command palette와의 충돌 회피 때문에 `ENABLE_COMMAND_PALETTE=False`는 유지하되, 실제 사용자 단축키는 `:`만 문서화한다. Results log도 초기에는 접어 두고, `_write_result`/`_run_argv`가 실제 출력이 생길 때만 펼친다. 이 변경의 원칙은 기능을 숨기는 것이 아니라, 이유를 설명할 수 없는 표면을 줄이는 것이다.
 
 > **반론**: ① read/act 분리는 *구조적*으로 안전하나, ConfirmModal의 Cancel-우선이 막는 건 "오발"이지 "악의"가 아니다 — 자동 갱신이 read-only라는 보장은 client.py에 mutate 메서드가 없다는 사실에 의존하므로, 누군가 client에 실행 메서드를 추가하면 그 불변식이 코드 리뷰에서만 지켜진다(테스트가 "auto-refresh는 mutate 안 함"을 직접 단언하는지는 미확인 — 의심되면 추가하라). ② `run_test` 검증은 *우리 렌더 로직*을 친다 — 실제 터미널의 폰트·색·리사이즈 깨짐은 잡지 못한다(SVG 스냅샷이라면 잡았을 부류). UX 리뷰어 점검이 그 갭을 사람 눈으로 메웠으나, 그건 회귀 가드가 아니라 1회성이다. ③ 패키지 소유 venv는 textual 버전을 핀하지 않으면 드리프트한다 — 테스트가 `textual 8.2.7`의 `.content` API에 주석으로 의존(`test_app.py` L271)하므로, textual 메이저 업그레이드는 재검증 대상이다.
 
@@ -228,7 +236,7 @@ TUI가 소비하는 계약(proxy status, model list/limits, route list, runtime 
 
 **check.zsh = 집행 척추**: 일회용 mktemp HOME에 **진짜 설치**를 수행하고 마지막에 `~/.claude`/`~/.codex`가 생성되지 않았음을 단언한다 — 경계 계약을 개발자의 실제 native 설치를 위험에 빠뜨리지 않고 매 CI에서 검증. master key 소스를 의도적으로 눈멀게 해(LITELLM_MASTER_KEY= + 미스 보장 keychain 계정) 자동 생성 경로를 결정론적으로 태운다. stub claude 패턴: wrapper의 산출물은 자식 프로세스가 받는 env+argv 계약이므로, 그 계약 자체를 echo로 관측한다(네트워크/과금/실바이너리 불요). **`set -e` 사건**: 내부 `zsh -fc` 블록은 마지막 명령의 종료코드만 전파하므로, d1c4edd 이전의 모든 중간 단언은 조용히 무효였다 — 모든 green run이 보이는 것보다 적게 증명하고 있었다. 적대적 테스트: PWNED 주입(시크릿이 어느 층에서도 셸 평가되지 않음), 외부 pid 보호(pid 파일의 프로세스가 litellm이어야만 신뢰 — pid 재활용 시 무고한 프로세스 kill 방지), 공백 포함 prefix 전체 수명주기.
 
-> **반론**: 단일 순차 스크립트는 첫 실패가 나머지를 가리고, claude만 stub이 있다(codex/goose/opencode 런치 계약은 간접 검증) — stub 패턴 확장이 자명한 다음 투자다.
+> **반론**: 단일 순차 스크립트는 첫 실패가 나머지를 가리고, claude만 stub이 있다(codex/opencode 런치 계약은 간접 검증) — stub 패턴 확장이 자명한 다음 투자다.
 
 ---
 
@@ -255,7 +263,7 @@ TUI가 소비하는 계약(proxy status, model list/limits, route list, runtime 
 | 동시 sync 거부(별도 sync mutex, restart의 proxy lock과 데드락 없음) | ✅ check (06-15 추가; held-lock 시 즉시 loud 거부) |
 | codex 세션 실행 pre-flight(바이너리 미기동 시 무한행 대신 loud-fail) | ✅ check (06-15 추가; hang stub→timeout+loud, instant stub→pass) |
 | 경계 계약(native 디렉토리 비생성, 시크릿 비평가, uninstall prefix 안전) | ✅ check |
-| **scrub 실효성**(scrub된 var가 자식 env에서 실제로 사라지는지) | ⚠️ 무방비 — codex/goose/opencode용 stub 테스트 권고 |
+| **scrub 실효성**(scrub된 var가 자식 env에서 실제로 사라지는지) | ⚠️ 무방비 — codex/opencode용 stub 테스트 권고 |
 | **harness 예약 ↔ gateway clamp 수치 정렬** | ⚠️ 무방비 — doctor warn 권고 (주석으로만 선언됨) |
 | **codex 생성 config의 안전 키 존재**(approval/sandbox/trust) | ⚠️ 무방비 — 렌더 결과 grep 권고 |
 | **앵커 ↔ modelInfoOverrides 동족 글롭 수치 일치** | ⚠️ 무방비 — 저위험, doctor warn 후보 |
@@ -286,11 +294,11 @@ TUI가 소비하는 계약(proxy status, model list/limits, route list, runtime 
 3. **subagentModel이 direct 전용** — 출생(8a507e1: main=sonnet, subagent=opus 품질 핀) 후 proxy로 이식되지 않았다. 바이너리 분석 결과 proxy에서 핀 부재는 사실상 옳다(미핀 subagent는 main 모델을 상속하며, 핀은 세션의 /model·로컬 tier 선택을 짓밟는 전역 override다). 현 기본값에서는 no-op이기도 하다. 의도였는지는 미기록 — 현 상태로 두되 주석으로 범위를 선언했다.
 4. **CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK가 direct 전용** — OpenRouter 레시피의 일부로 재구성되나 proxy 부재의 이유는 미확인.
 5. **gpt-5.4-mini가 카탈로그 클론 베이스인 이유** — "가장 중립적인 소형 템플릿"으로 추정될 뿐 기록 없음. 번들에서 사라지면 models[0] 폴백이 놀라운 기본값을 가질 수 있다.
-6. **harness별 기본 모델 분배(codex=DeepSeek+xhigh, goose/opencode=Kimi)** — codex만 reasoning-effort 레버가 있어 최강 추론 백엔드와 짝지은 것으로 재구성되나, 정확한 가중(비용? eval?)은 미기록. 다음에 만질 때 기록하라.
+6. **harness별 기본 모델 분배(codex=DeepSeek+xhigh, opencode=Kimi)** — codex만 reasoning-effort 레버가 있어 최강 추론 백엔드와 짝지은 것으로 재구성되나, 정확한 가중(비용? eval?)은 미기록. 다음에 만질 때 기록하라.
 7. **shell.zsh의 하드코딩 폴백들**(env 이름, tier 목록, 모드별 default의 화석화된 opus/sonnet 종단) — descriptor가 검증 필수라 건강한 설치에서 도달 불가능한 사실상 죽은 코드. loud-fail로 교체가 방어 가능한 정리다.
 8. **deprecated alias 테이블에 일몰 기준이 없다** — 무해하나 영생할 것이다.
 9. **availabilityNux** — 의미는 상류 소스로 확정(모델 광고 툴팁의 표시 횟수 카운터, 상한 4). 값 3은 작성자의 라이브 카운터 복사로 추정되며 **기능적으로 틀려서**(3<4 + 매 런치 재렌더로 증분 소실 → 툴팁 매번 재출현) 4로 수정했다(06-12).
-10. **nvm 부트스트랩 비대칭** — 드리프트로 판정(npm 배포 CLI 시대의 잔재). PATH-최소 컨텍스트에서 goose/opencode가 hard-fail하고 key-status가 **조용히 "키 없음"으로 오보고**하던 것을 7개 shim 통일로 수정했다(06-12).
+10. **nvm 부트스트랩 비대칭** — 드리프트로 판정(npm 배포 CLI 시대의 잔재). PATH-최소 컨텍스트에서 opencode가 hard-fail하고 key-status가 **조용히 "키 없음"으로 오보고**하던 것을 shim 통일로 수정했다(06-12).
 11. **`__FABRIC_HOME__/` 리터럴 디렉토리 풋건 (해결)** — checkout에서 wrapper를 직접 실행하면 미렌더 경로에 상태를 쓰던 풋건. 이제 `ai_litellm_assert_rendered_path`가 descriptor 파생 mkdir(isolation home, Claude settings dir, shared-env dir, opencode config·XDG home) 직전에 해석된 경로의 placeholder를 잡아 loud-fail하고, `.gitignore`가 잔재를 가리며, check.zsh가 회귀를 단언한다. 가드의 마커는 install.zsh의 렌더가 가드 자신을 치환하지 못하도록 조각으로 조립한다.
 12. **관측의 무기한 표시** — 2026년의 lower bound가 2027년에도 신뢰를 빌려준다. 프로바이더 믹스가 유동적이 되면 타임스탬프 표시/노화를 고려하라.
 

@@ -1,4 +1,4 @@
-"""`:` / ctrl+p command palette — fuzzy-search the curated registry, supply
+"""`:` command palette — fuzzy-search the curated registry, supply
 free-text args with a usage hint, return the resolved argv. Execution (gate +
 run) is the app's job via _run_argv — the palette only SELECTS."""
 from __future__ import annotations

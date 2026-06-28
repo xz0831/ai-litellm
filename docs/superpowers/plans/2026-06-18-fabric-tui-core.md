@@ -434,7 +434,7 @@ git commit -m "feat(dash): Textual app shell with concept tree + read panels"
 - Consumes: installed `fabric_dash` package under `$AI_LITELLM_CONFIG_HOME/ai-litellm/fabric_dash`.
 - Produces: `ai-litellm dash [args]` runs the TUI; `fabric [args]` shim → `ai-litellm dash`.
 
-- [ ] **Step 1: Create `bin/fabric`** — mirror the existing shim bootstrap (see `bin/goose-litellm`), ending in:
+- [ ] **Step 1: Create `bin/fabric`** — mirror the existing shim bootstrap (see `bin/claude-litellm`), ending in:
 
 ```zsh
 #!/usr/bin/env zsh
@@ -443,7 +443,7 @@ AI_LITELLM_FABRIC_HOME="${AI_LITELLM_FABRIC_HOME:-${XDG_DATA_HOME:-$HOME/.local/
 exec "$AI_LITELLM_FABRIC_HOME/bin/ai-litellm" dash "$@"
 ```
 
-> Note: match the exact bootstrap (nvm sourcing, `${0:A:h}` checkout-relative fallback) used by `bin/goose-litellm` so `fabric` works both from a checkout and when installed. Read `bin/goose-litellm` and copy its header verbatim, changing only the final `exec` line.
+> Note: match the exact bootstrap (nvm sourcing, `${0:A:h}` checkout-relative fallback) used by `bin/claude-litellm` so `fabric` works both from a checkout and when installed. Read `bin/claude-litellm` and copy its header shape, changing the final dispatch for the dashboard.
 
 - [ ] **Step 2: Add `dash)` dispatch** — in `ai_litellm()` (around the `uninstall)`/`capabilities)` cases, ~line 5796):
 
@@ -573,7 +573,7 @@ git commit -m "feat(dash): install/check/readme wiring for fabric TUI"
 
 **Spec coverage:** Read panels (Proxy/Harnesses/Models·Routes/Runtimes/Budget/Keys, spec §5), live status header + 4s safe auto-refresh (§5.1), `--json`-only data access (§4), Textual-as-optional-dep (§3, §8), `fabric`→`ai-litellm dash` packaging (§8), zero-network tests (§10). Deferred to Plan 3: action bar, confirm modals, launch flow, doctor runner, safety classification UI (§6, §7 actions).
 
-**Placeholder scan:** `> Note:` blocks point to verbatim-copy/verify-against-existing-code with concrete fallbacks (shim header from `bin/goose-litellm`, check var names, matrix JSON via env flag) — not unspecified work. All code steps are runnable.
+**Placeholder scan:** `> Note:` blocks point to verbatim-copy/verify-against-existing-code with concrete fallbacks (shim header from `bin/claude-litellm`, check var names, matrix JSON via env flag) — not unspecified work. All code steps are runnable.
 
 **Type consistency:** `FabricClient` method names (`proxy_status`, `model_limits`, `route_list`, `runtime_status`, `reasoning_matrix`, `context_matrix`, `harness_list`, `key_status`) match between `client.py`, tests, and `app.py`. Tree node ids (`proxy|harnesses|models|runtimes|budget|keys`) match `CONCEPTS` and `show_panel`. JSON keys match Plan 1/Task 1 emitters (`health`, `configCurrency`, `baseUrl`).
 

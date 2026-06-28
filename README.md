@@ -7,7 +7,6 @@ This repository manages the wrapper layer around local agent CLIs:
 - `ai-litellm`: shared proxy lifecycle, routing, context/reasoning doctors
 - `claude-litellm`: Claude Code on non-Anthropic models — LiteLLM proxy by default (OpenRouter + local oMLX routes), with an OpenRouter Anthropic-compatible direct mode (`--direct`)
 - `codex-litellm`: Codex CLI through the shared LiteLLM proxy
-- `goose-litellm`: goose through the shared LiteLLM proxy
 - `opencode-litellm`: OpenCode through the shared LiteLLM proxy
 
 It shares the user-scope environment with native harnesses while keeping
@@ -29,7 +28,7 @@ session state isolated per variant:
   plugin state) exactly as a native session would
 - no writes to `~/.codex` (codex keeps a fully isolated `CODEX_HOME`;
   see the session-boundary decision log in the architecture guide)
-- no replacement of `claude`, `codex`, `goose`, or `opencode`
+- no replacement of `claude`, `codex`, or `opencode`
 - no API keys in git
 
 The installed wrapper layer is one package directory plus thin global command
@@ -57,8 +56,8 @@ Tracked source:
 - `docs/DESIGN_RATIONALE.md`: why every non-obvious decision is the way it is
   (rationale, rejected alternatives, standing counter-arguments, honest unknowns)
 - `docs/APPLYING_MODELS_TO_HARNESSES.md`: practitioner playbook — given a model
-  (cloud/OpenRouter or local/oMLX), how to apply it to Claude Code / Codex / goose /
-  opencode with the context & token budgeting right, with worked examples
+  (cloud/OpenRouter or local/oMLX), how to apply it to Claude Code / Codex /
+  OpenCode with the context & token budgeting right, with worked examples
   (DeepSeek-V4-Pro, Kimi-K2.6, GLM-5.2, local Qwen3.6)
 - `scripts/install.zsh`: installer for another Mac
 - `scripts/uninstall.zsh`: package/shim remover
@@ -90,8 +89,8 @@ Prerequisites on the target Mac:
 
 Harness CLIs are optional. Install native `claude` only if using
 `claude-litellm`, native `codex` only if using `codex-litellm`, and
-`goose`/`opencode` only if using those harnesses. A Claude-only machine can
-install the package without Codex.
+`opencode` only if using that harness. A Claude-only machine can install the
+package without Codex.
 
 Preview:
 
@@ -116,7 +115,6 @@ layer, and creates a local LiteLLM master key if one is not already available:
 - `~/.local/bin/ai-litellm`
 - `~/.local/bin/claude-litellm`
 - `~/.local/bin/codex-litellm`
-- `~/.local/bin/goose-litellm`
 - `~/.local/bin/opencode-litellm`
 - `~/.local/bin/openrouter-key-status`
 - `~/.local/bin/litellm-master-key-status`
@@ -196,6 +194,22 @@ to.)
 default, which can interrupt active LiteLLM-backed sessions. Use
 `ai-litellm sync --dry-run` to inspect actions first, or `--no-restart` to
 regenerate without bouncing the proxy.
+
+For orchestration, `ai-litellm router` exposes the same state as JSON and can
+prepare or run a bounded one-shot harness call:
+
+```zsh
+ai-litellm router schema --json
+ai-litellm router plan --json --estimated-input-tokens 1000
+ai-litellm router execute --json --dry-run --prompt 'Reply with exactly OK'
+ai-litellm router execute --json --prompt 'Reply with exactly OK' --confirm-billable
+```
+
+Router payloads carry `schemaVersion: 1` and `contractVersion: "router.v1"`.
+The default route is `claude/opus`. Use `--local-only` or `--no-billable` when
+the orchestrator must stay on local/free routes. Route diagnostics are available
+as stable `{code,message,details?}` objects so agents do not need to parse
+human-readable reason strings.
 
 Supported harnesses are optional on each machine. `sync`, `doctor`, and
 metadata commands must skip missing native CLIs cleanly; only launching that
@@ -292,7 +306,6 @@ they send or infer per-request `max_tokens` values:
 - Codex LiteLLM: generated catalog `context_window` for OpenRouter-backed
   slugs is reduced to the safe input budget because Codex does not expose a
   reliable Responses output cap
-- goose: `GOOSE_MAX_TOKENS`
 - OpenCode: `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` for the custom
   OpenAI-compatible provider ceiling
 
@@ -355,13 +368,18 @@ read-only by default:
 fabric            # or: ai-litellm dash
 ```
 
-It shows proxy health, config currency, models/routes, runtimes, budget
-policy, and keys in one screen, with a read-only live auto-refresh. Mutating
-actions (sync/restart/stop, harness launch) gate behind a confirmation that
-names the consequence — disruptive actions (sync/restart/stop) are Cancel-first
-(Cancel focused), while the billable harness launch is Confirm-focused; only
-genuinely safe actions (start/doctor) run without a prompt. Launching a harness hands the terminal
-over (the TUI exits and `exec`s the harness).
+It shows proxy health, router candidates, config currency, models/routes,
+runtimes, budget policy, and keys in one screen, with a read-only live
+auto-refresh. The Router panel is an inspect/override front-end for
+`ai-litellm router`: it shows the current intent (`no-billable`, estimated input,
+selected route), hides the internal rank score from the primary table, and
+seeds plan/explain/dry-run/execute forms from the highlighted row. Mutating
+actions (sync/restart/stop, harness launch, router execute) gate behind a
+confirmation that names the consequence; disruptive and billable actions are
+Cancel-first. Router dry-runs pass prompts through stdin instead of argv/logs.
+Launching a harness hands the terminal over (the TUI exits and `exec`s the
+harness). The command palette is the `:` key only; router actions use the
+structured Router panel rather than raw palette commands.
 
 The dashboard runs from a package-owned Python venv at
 `$AI_LITELLM_STATE_HOME/dash-venv` with Textual installed there;

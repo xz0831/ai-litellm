@@ -330,7 +330,7 @@ async def test_map_action_still_guards_other_harness():
     app = FabricApp(client=make_client())
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._selected = "harnesses"; app._selected_harness = "goose"   # neither claude nor codex
+        app._selected = "harnesses"; app._selected_harness = "opencode"   # neither claude nor codex
         await pilot.press("m"); await pilot.pause()
         from fabric_dash.tier_modal import TierMapModal
         assert not isinstance(app.screen, TierMapModal)

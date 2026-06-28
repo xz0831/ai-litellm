@@ -19,6 +19,8 @@ def classify(argv: list) -> str:
     # oracle so the launch gate (app.action_launch) can't silently diverge.
     if a[:2] == ["harness", "launch"]:
         return BILLABLE
+    if a[:2] == ["router", "execute"]:
+        return SAFE if "--dry-run" in a else BILLABLE
     # Billable probes: the `probe` verb token or a `--probe*` flag (covers
     # `route probe`, `reasoning probe`, and `proxy doctor --probe-routes`), and
     # `route check <model>` for any trailing model arg (endswith missed `route

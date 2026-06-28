@@ -817,11 +817,6 @@ switch (descriptor.adapter) {
     requirePositiveInteger(adapterConfig.outputReservation || {}, "minimumInput", "adapterConfig.outputReservation");
     requireStringArray(adapterConfig, "subcommands", "adapterConfig");
     break;
-  case "env-injector":
-    requireString(paths, "home", "paths");
-    requireString(models, "default", "models");
-    if (!isObject(adapterConfig.env)) errors.push("adapterConfig.env must be an object");
-    break;
   case "opencode-cli":
     for (const key of ["home", "config", "configDir"]) requireString(paths, key, "paths");
     requireString(provider, "name", "provider");
@@ -926,7 +921,7 @@ const render = (value) => {
 for (const [key, value] of Object.entries(descriptor.adapterConfig?.env || {})) {
   const rendered = render(value);
   // Skip vars that resolve to empty (e.g. {{limits.context}} when the model has
-  // no configured limit) so we never inject GOOSE_CONTEXT_LIMIT= and friends.
+  // no configured limit) so optional harness env vars are not injected empty.
   if (rendered === "") continue;
   console.log(`${key}\t${rendered}`);
 }
@@ -1321,57 +1316,6 @@ ai_litellm_harness_parse_model_selection() {
   }
 }
 
-ai_litellm_launch_env_injector() {
-  local harness="$1"
-  shift
-
-  local -a args env_assignments
-  args=("$@")
-
-  ai_litellm_harness_parse_model_selection "$harness" "${args[@]}" || return $?
-  local model="$AI_LITELLM_SELECTED_MODEL"
-  if (( AI_LITELLM_SELECTED_MODEL_CONSUMED )); then
-    args=("${args[@]:1}")
-  fi
-
-  # Blocked-subcommand check runs after model consumption so both invocation
-  # forms are covered: `goose-litellm configure` and `goose-litellm <model> configure`.
-  if [[ -n "${args[1]:-}" ]]; then
-    local blocked_reason
-    blocked_reason="$(ai_litellm_harness_json "$harness" "adapterConfig.blockedSubcommands.${args[1]}" 2>/dev/null || true)"
-    if [[ -n "$blocked_reason" ]]; then
-      echo "$harness-litellm: subcommand '${args[1]}' is blocked: $blocked_reason" >&2
-      return 1
-    fi
-  fi
-
-  ai_litellm_model_runtime_ready "$model" || return $?
-  ai_litellm_start >/dev/null || return $?
-
-  local key value auth_env auth_source auth_secret isolation_env command
-  while IFS=$'\t' read -r key value; do
-    [[ -n "$key" ]] && env_assignments+=("$key=$value")
-  done < <(ai_litellm_harness_env_assignments "$harness" "$model")
-
-  auth_env="$(ai_litellm_harness_json "$harness" provider.auth.env 2>/dev/null || true)"
-  auth_source="$(ai_litellm_harness_json "$harness" provider.auth.source 2>/dev/null || true)"
-  if [[ -n "$auth_env" && -n "$auth_source" && "$auth_source" != "none" ]]; then
-    auth_secret="$(ai_litellm_harness_secret_value "$auth_source")" || return $?
-    env_assignments+=("$auth_env=$auth_secret")
-  fi
-
-  isolation_env="$(ai_litellm_harness_json "$harness" isolation.env 2>/dev/null || true)"
-  value="$(ai_litellm_harness_json "$harness" paths.home 2>/dev/null || true)"
-  if [[ -n "$isolation_env" && -n "$value" ]]; then
-    ai_litellm_assert_rendered_path "$value" "harness home" || return $?
-    mkdir -p "$value"
-    env_assignments+=("$isolation_env=$value")
-  fi
-
-  command="$(ai_litellm_harness_json "$harness" command)" || return 1
-  ai_litellm_harness_exec_env "$harness" "${env_assignments[@]}" -- "$command" "${args[@]}"
-}
-
 ai_litellm_render_opencode_config() {
   local harness="$1"
   local descriptor config_path config_dir
@@ -1530,9 +1474,6 @@ ai_litellm_launch() {
       ;;
     codex-cli)
       CODEX_LITELLM_HARNESS="$harness" "$AI_LITELLM_BIN_DIR/codex-litellm" "$@"
-      ;;
-    env-injector)
-      ai_litellm_launch_env_injector "$harness" "$@"
       ;;
     opencode-cli)
       ai_litellm_launch_opencode "$harness" "$@"
@@ -3267,7 +3208,7 @@ ai_litellm_sync() {
     echo "- proxy restart skipped"
   fi
 
-  echo "- claude/goose output limits derive at next launch"
+  echo "- claude output limits derive at next launch"
   (( sync_lock_held )) && rm -rf "$sync_lock" 2>/dev/null
   return $failed
 }
@@ -3418,7 +3359,6 @@ ai_litellm_doctor() {
   ai_litellm_doctor_check "ai-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/ai-litellm" || failed=1
   ai_litellm_doctor_check "claude-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/claude-litellm" || failed=1
   ai_litellm_doctor_check "codex-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/codex-litellm" || failed=1
-  ai_litellm_doctor_check "goose-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/goose-litellm" || failed=1
   ai_litellm_doctor_check "opencode-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/opencode-litellm" || failed=1
   ai_litellm_doctor_check "litellm command available" ai_litellm_quiet command -v litellm || failed=1
   ai_litellm_doctor_check "node command available" ai_litellm_quiet command -v node || failed=1
@@ -4431,7 +4371,7 @@ descriptor_paths(harness_dir).each do |path|
       seen.add(key)
       add_row(rows, harness, selection, model, descriptor, registry)
     end
-  when "env-injector", "opencode-cli"
+  when "opencode-cli"
     default = descriptor.dig("models", "default")
     add_row(rows, harness, "default(#{default})", default, descriptor, registry) if default
     small = descriptor.dig("models", "small")
@@ -4559,13 +4499,6 @@ const adapterReasoning = {
       };
     }
   },
-  "env-injector": {
-    allowed: ["auto", "none"],
-    unsetEffort: "none",
-    build() {
-      return noHarnessControl("This harness exposes no native reasoning-effort control.");
-    }
-  }
 };
 
 if (!adapterReasoning[adapter]) fail(`Unsupported harness adapter for reasoning mutation: ${adapter}`);
@@ -5436,7 +5369,7 @@ ai_litellm_context_probe() {
       echo "Local state: API-key lane is not active unless $HOME/.codex/auth.json auth_mode is api-key."
       [[ -f "$HOME/.codex/auth.json" ]] && jq '{auth_mode, has_api_key:(.OPENAI_API_KEY!=null and .OPENAI_API_KEY!=""), has_tokens:(.tokens!=null)}' "$HOME/.codex/auth.json"
       ;;
-    codex-litellm|claude-litellm|goose-litellm|opencode-litellm)
+    codex-litellm|claude-litellm|opencode-litellm)
       ai_litellm_context_probe_litellm_surface "$surface"
       ;;
     claude-code-native)
@@ -5819,21 +5752,6 @@ if (high.length && !process.env.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX) {
   done
 }
 
-ai_litellm_context_warn_goose_scope() {
-  local descriptor
-  descriptor="$(ai_litellm_harness_descriptor goose 2>/dev/null)" || return 0
-  node -e '
-const fs = require("fs");
-const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const env = d.adapterConfig?.env || {};
-if (env.GOOSE_CONTEXT_LIMIT && !env.GOOSE_MAX_TOKENS) {
-  console.log("Goose descriptor injects context without GOOSE_MAX_TOKENS output reservation.");
-}
-' "$descriptor" | while IFS= read -r line; do
-    [[ -n "$line" ]] && ai_litellm_context_doctor_warn "$line"
-  done
-}
-
 ai_litellm_context_warn_omlx_policy_cap() {
   ai_litellm_ruby -rjson -ryaml -e '
 settings_path, config_path = ARGV
@@ -5972,7 +5890,6 @@ ai_litellm_context_doctor() {
   ai_litellm_context_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
   ai_litellm_context_doctor_check "context matrix renders" ai_litellm_quiet ai_litellm_context_matrix || failed=1
   ai_litellm_context_warn_opencode_output_cap
-  ai_litellm_context_warn_goose_scope
   ai_litellm_context_warn_omlx_policy_cap
   ai_litellm_context_warn_glm_output_source
   ai_litellm_context_warn_provider_capability_drift
@@ -6214,6 +6131,16 @@ ai_litellm_cmd_doctor() {
   esac
 }
 
+ai_litellm_cmd_router() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo "ai-litellm router requires python3" >&2
+    return 1
+  }
+  AI_LITELLM_ROUTER_BINARY="$AI_LITELLM_BIN_DIR/ai-litellm" \
+  PYTHONPATH="$AI_LITELLM_CONFIG_HOME/ai-litellm${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m router_core "$@"
+}
+
 ai_litellm_codex_facade_json() {
   ai_litellm_ruby -rjson -e '
     facades = %w[gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.2 gpt-5.3-codex]
@@ -6326,12 +6253,13 @@ Usage: ai-litellm <group> <verb> [args]
   Uninstall:     ai-litellm uninstall     Remove package directory and global shims
   Codex:         ai-litellm codex facade get [--json]
                  ai-litellm codex facade set <facade> <source_model_name>
+  Router:        ai-litellm router schema|snapshot|plan|explain|execute --json [intent opts]
   Capabilities:  ai-litellm capabilities  Proxy + runtime capability summary
   Dash:          ai-litellm dash          Launch the fabric control-plane TUI (or run: fabric)
 
 Reasoning effort values (not a command — pass to reasoning/harness set):
   OpenRouter none|minimal|low|medium|high|xhigh   Claude auto|low|medium|high|xhigh|max
-  Codex low|medium|high|xhigh   OpenCode auto|none|minimal|low|medium|high|max   Goose auto|none
+  Codex low|medium|high|xhigh   OpenCode auto|none|minimal|low|medium|high|max
 
 Flat forms (start, stop, status, route-info, harnesses, launch, ...) still work but
 are deprecated in favor of the groups above.
@@ -6355,6 +6283,7 @@ ai_litellm() {
     audit)        ai_litellm_cmd_audit "$@" ;;
     doctor)       ai_litellm_cmd_doctor "$@" ;;
     key)          ai_litellm_cmd_key "$@" ;;
+    router)       ai_litellm_cmd_router "$@" ;;
     sync|--sync)  ai_litellm_sync "$@" ;;
     uninstall)    ai_litellm_uninstall "$@" ;;
     capabilities|--capabilities) ai_litellm_capabilities ;;

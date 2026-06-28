@@ -18,7 +18,9 @@ def test_classify_billable_edge_cases():
     - `route check <model>` with a trailing model arg (endswith missed it)
     - `--probe-routes` flag token (membership of bare 'probe' missed it)
     - `proxy` must NOT trip the 'probe' substring rule."""
-    assert safety.classify(["harness", "launch", "goose"]) == safety.BILLABLE
+    assert safety.classify(["harness", "launch", "opencode"]) == safety.BILLABLE
+    assert safety.classify(["router", "execute", "--json"]) == safety.BILLABLE
+    assert safety.classify(["router", "execute", "--json", "--dry-run"]) == safety.SAFE
     assert safety.classify(["route", "check", "GLM-5.2"]) == safety.BILLABLE
     assert safety.classify(["route", "check"]) == safety.BILLABLE
     assert safety.classify(["proxy", "doctor", "--probe-routes"]) == safety.BILLABLE

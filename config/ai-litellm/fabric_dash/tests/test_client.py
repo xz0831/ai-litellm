@@ -69,3 +69,23 @@ def test_codex_facades_read():
     assert rows[0]["facade"] == "gpt-5.5"
     assert ["ai-litellm", "codex", "facade", "get", "--json"] in seen
     assert FabricClient(runner=lambda a: (1, "")).codex_facades() == []
+
+def test_router_reads():
+    seen = []
+    def run(argv):
+        seen.append(argv)
+        if argv[:3] == ["ai-litellm", "router", "plan"]:
+            return (0, '{"selected":{"harness":"claude"},"candidates":[]}')
+        if argv[:3] == ["ai-litellm", "router", "explain"]:
+            return (0, '{"selected":null,"rejectedCount":1}')
+        if argv[:3] == ["ai-litellm", "router", "snapshot"]:
+            return (0, '{"contractVersion":"router.v1"}')
+        return (1, "")
+    c = FabricClient(runner=run)
+    assert c.router_plan(["--no-billable"])["selected"]["harness"] == "claude"
+    assert c.router_explain(["--no-billable"])["rejectedCount"] == 1
+    assert c.router_snapshot()["contractVersion"] == "router.v1"
+    assert ["ai-litellm", "router", "plan", "--json", "--no-billable"] in seen
+    assert ["ai-litellm", "router", "explain", "--json", "--no-billable"] in seen
+    assert ["ai-litellm", "router", "snapshot", "--json"] in seen
+    assert FabricClient(runner=lambda a: (1, "")).router_plan() == {}

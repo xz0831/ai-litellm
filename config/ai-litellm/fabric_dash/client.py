@@ -41,6 +41,10 @@ class FabricClient:
         v = self._json(*args)
         return v if isinstance(v, list) else []
 
+    def _obj_args(self, args: list[str]) -> dict:
+        v = self._json(*args)
+        return v if isinstance(v, dict) else {}
+
     def proxy_status(self) -> dict: return self._obj("proxy", "status", "--json")
     def key_status(self) -> dict: return self._obj("key", "status", "--json")
     def model_list(self) -> list: return self._arr("model", "list", "--json")
@@ -57,3 +61,9 @@ class FabricClient:
         return self._arr("harness", "alias", "get", name, "--json")
     def codex_facades(self) -> list:
         return self._arr("codex", "facade", "get", "--json")
+    def router_snapshot(self) -> dict:
+        return self._obj("router", "snapshot", "--json")
+    def router_plan(self, args: list[str] | None = None) -> dict:
+        return self._obj_args(["router", "plan", "--json", *(args or [])])
+    def router_explain(self, args: list[str] | None = None) -> dict:
+        return self._obj_args(["router", "explain", "--json", *(args or [])])
