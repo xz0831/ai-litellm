@@ -25,8 +25,6 @@ python3 -m py_compile "$repo_root/scripts/verify_litellm_token_clamp.py"
 python3 -m py_compile "$repo_root/scripts/verify_tool_call_fidelity.py"
 python3 -m py_compile "$repo_root/config/ai_litellm_callbacks/output_clamp.py"
 python3 -m py_compile "$repo_root/scripts/verify_budget_consistency.py"
-python3 -m compileall -q "$repo_root/config/ai-litellm/router_core"
-PYTHONPATH="$repo_root/config/ai-litellm" python3 -m unittest discover -s "$repo_root/config/ai-litellm/router_core/tests" -q
 
 # Differential test: the four token-budget implementations (Node + 2 Ruby copies
 # in lib.zsh, Python in output_clamp.py) must agree on every comparable quantity
@@ -62,43 +60,23 @@ echo "ok: scratchpad docs removed (M23)"
 tmp_home="$(mktemp -d)"
 spaced_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home" "$spaced_home"' EXIT
-AI_LITELLM_SKIP_DASH_VENV=1 LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-$$" HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
+LITELLM_MASTER_KEY= LITELLM_MASTER_KEYCHAIN_ACCOUNT="ai-litellm-check-no-key-$$" HOME="$tmp_home" "$repo_root/scripts/install.zsh" >/dev/null
 REAL_HOME="$real_home" HOME="$tmp_home" zsh -fc '
 set -e
 prefix="$HOME/.local/share/ai-litellm-fabric"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/lib.zsh"
-test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/router_core/__main__.py"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai-litellm/context-observations.json"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/litellm_config.yaml"
 test -f "$HOME/.local/share/ai-litellm-fabric/config/ai_litellm_callbacks/output_clamp.py"
 test -x "$HOME/.local/share/ai-litellm-fabric/scripts/uninstall.zsh"
 test -x "$HOME/.local/share/ai-litellm-fabric/bin/claude-litellm"
 test -x "$HOME/.local/bin/claude-litellm"
-[[ -x "$HOME/.local/bin/fabric" ]] || { echo "FAIL: fabric shim missing"; exit 1; }
-# module import check using the dash venv installed by install.zsh
-tmp_venv="$HOME/.local/share/ai-litellm-fabric/state/dash-venv"
-tmp_prefix="$HOME/.local/share/ai-litellm-fabric"
-if [[ -x "$tmp_venv/bin/python" ]] && "$tmp_venv/bin/python" -c "import textual" 2>/dev/null; then
-  PYTHONPATH="$tmp_prefix/config/ai-litellm" "$tmp_venv/bin/python" -m fabric_dash --help >/dev/null 2>&1 \
-    || { echo "FAIL: fabric_dash --help failed under dash venv"; exit 1; }
-  echo "ok: fabric shim + module (venv)"
-else
-  echo "note: skipping fabric_dash module check (dash venv/textual unavailable in check env)" >&2
-fi
 "$HOME/.local/bin/ai-litellm" --help >/dev/null
-"$HOME/.local/bin/ai-litellm" router schema --json >/dev/null
-"$HOME/.local/bin/ai-litellm" router snapshot --json >/dev/null
-"$HOME/.local/bin/ai-litellm" router plan --json --estimated-input-tokens 1000 >/dev/null
-"$HOME/.local/bin/ai-litellm" router plan --json --estimated-input-tokens 1000 --no-billable >/dev/null
-"$HOME/.local/bin/ai-litellm" router execute --json --dry-run --estimated-input-tokens 1000 >/dev/null
-"$HOME/.local/bin/ai-litellm" router execute --json --dry-run --prompt "Reply with exactly OK" --estimated-input-tokens 1000 >/dev/null
-set +e
-OPENROUTER_API_KEY=CHECK_OPENROUTER "$HOME/.local/bin/ai-litellm" router execute --json --prompt "Reply with exactly OK" --estimated-input-tokens 1000 >"$HOME/router-billable-refusal.json" 2>/dev/null
-router_refusal_rc="$?"
-set -e
-test "$router_refusal_rc" = "3"
-grep -q "confirm-billable" "$HOME/router-billable-refusal.json"
-grep -q "billing.confirmation_required" "$HOME/router-billable-refusal.json"
+"$HOME/.local/bin/ai-litellm" status > "$HOME/status-text.out" 2>/dev/null
+grep -q "harness model mappings:" "$HOME/status-text.out"
+"$HOME/.local/bin/ai-litellm" status --json > "$HOME/status.json" 2>/dev/null
+node -e "const o=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));for(const k of [\"proxy\",\"harnesses\",\"runtimes\",\"keys\",\"models\"]) if(!(k in o)){console.error(\"status --json missing key: \"+k);process.exit(1)}" "$HOME/status.json"
+echo "ok: status one-shot summary (text + json)"
 ! grep -R "__HOME__\\|__FABRIC_HOME__" "$prefix/config" "$prefix/docs" >/dev/null
 grep -q "AI_LITELLM_FABRIC_HOME=" "$HOME/.local/bin/ai-litellm"
 grep -q "exec.*bin/ai-litellm" "$HOME/.local/bin/ai-litellm"
@@ -690,15 +668,6 @@ fi
 if HOME="$spaced_home" "$repo_root/scripts/uninstall.zsh" --prefix "$spaced_home/not-fabric" >/dev/null 2>&1; then
   echo "Unsafe uninstall prefix was accepted" >&2
   exit 1
-fi
-
-dash_venv_python="${real_home}/.local/share/ai-litellm-fabric/state/dash-venv/bin/python"
-if [[ -x "$dash_venv_python" ]] && "$dash_venv_python" -c 'import textual, pytest' >/dev/null 2>&1; then
-  ( cd "$repo_root/config/ai-litellm" && "$dash_venv_python" -m pytest fabric_dash/tests/ -q ) \
-    || { echo "FAIL: fabric_dash tests"; exit 1; }
-  echo "ok: fabric_dash tests"
-else
-  echo "note: skipping fabric_dash tests (textual/pytest not installed)" >&2
 fi
 
 echo "ok"

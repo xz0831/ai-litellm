@@ -48,11 +48,11 @@ PY_PKG = REPO / "config"
 # lib.zsh. If they drift, the marker check below fails before any row runs.
 NODE_RANGE = (457, 523)          # node -e '<body>' in ai_litellm_harness_output_budget
 RUBY_CAT_RANGE = (551, 589)      # positive_int + pick_reservation + effective_input
-RUBY_MAT_RANGE = (4562, 4623)    # positive_int + output_budget
+RUBY_MAT_RANGE = (4433, 4494)    # positive_int + output_budget
 # 5th copy: the ruby block inside ai_litellm_context_harness_reservations_ok().
-# positive_int (5425-5430) ... output_budget (5456-5490). The intervening
-# selections() def (5432-5454) is inert here -- never called -- and harmless.
-RUBY_RES_RANGE = (5425, 5490)    # positive_int + (selections) + output_budget
+# positive_int (5296-5301) ... output_budget (5327-5361). The intervening
+# selections() def (5303-5325) is inert here -- never called -- and harmless.
+RUBY_RES_RANGE = (5296, 5361)    # positive_int + (selections) + output_budget
 
 
 # =============================================================================

@@ -302,7 +302,7 @@ for file in \
   require_file "$file"
 done
 
-for script in ai-litellm claude-litellm codex-litellm openrouter-key-status litellm-master-key-status fabric; do
+for script in ai-litellm claude-litellm codex-litellm openrouter-key-status litellm-master-key-status; do
   require_file "$repo_root/bin/$script"
 done
 
@@ -361,6 +361,18 @@ remove_retired_opencode_support() {
 }
 remove_retired_opencode_support
 
+remove_retired_dash_router_support() {
+  run rm -f "$bin_dir/fabric"
+  for backup in "$bin_dir/fabric".bak.*(N); do
+    run rm -f "$backup"
+  done
+  run rm -f "$prefix/bin/fabric"
+  run rm -rf "$prefix/config/ai-litellm/fabric_dash"
+  run rm -rf "$prefix/config/ai-litellm/router_core"
+  run rm -rf "$prefix/state/dash-venv"
+}
+remove_retired_dash_router_support
+
 install_rendered "$repo_root/config/litellm_config.yaml" "$prefix/config/litellm_config.yaml"
 install_rendered "$repo_root/config/ai_litellm_callbacks/__init__.py" "$prefix/config/ai_litellm_callbacks/__init__.py"
 install_rendered "$repo_root/config/ai_litellm_callbacks/output_clamp.py" "$prefix/config/ai_litellm_callbacks/output_clamp.py"
@@ -371,39 +383,6 @@ for descriptor in "$repo_root"/config/ai-litellm/harnesses/*.json(N); do
   install_rendered "$descriptor" "$prefix/config/ai-litellm/harnesses/${descriptor:t}"
 done
 
-for pyfile in "$repo_root"/config/ai-litellm/fabric_dash/**/*.py(N); do
-  rel="${pyfile#$repo_root/config/ai-litellm/}"
-  [[ "$rel" == */tests/* ]] && continue
-  install_rendered "$pyfile" "$prefix/config/ai-litellm/$rel"
-done
-install_rendered "$repo_root/config/ai-litellm/fabric_dash/app.tcss" "$prefix/config/ai-litellm/fabric_dash/app.tcss"
-
-for pyfile in "$repo_root"/config/ai-litellm/router_core/**/*.py(N); do
-  rel="${pyfile#$repo_root/config/ai-litellm/}"
-  [[ "$rel" == */tests/* ]] && continue
-  install_rendered "$pyfile" "$prefix/config/ai-litellm/$rel"
-done
-
-ensure_dash_venv() {
-  local venv="$prefix/state/dash-venv"
-  # Escape hatch for CI / structural checks: building a venv + pip-installing
-  # textual hits the network and is slow. check.zsh sets this so a real install
-  # into a throwaway HOME stays fast and offline-safe (the dash module check
-  # then skips gracefully). Real user installs leave it unset and build the venv.
-  [[ -n "${AI_LITELLM_SKIP_DASH_VENV:-}" ]] && { log "skip dash venv (AI_LITELLM_SKIP_DASH_VENV set)"; return 0; }
-  if (( dry_run )); then log "dry-run create dash venv at $venv + pip install textual"; return 0; fi
-  command -v python3 >/dev/null 2>&1 || { echo "note: python3 not found — skipping fabric dashboard venv." >&2; return 0; }
-  if [[ ! -x "$venv/bin/python" ]]; then
-    python3 -m venv "$venv" 2>/dev/null || { echo "note: could not create dashboard venv ($venv); 'fabric' will be unavailable until created." >&2; return 0; }
-  fi
-  # Non-fatal: install.zsh runs under `set -e`; a failing pip (e.g. offline
-  # re-install) must NOT abort the whole install. Guard every pip call.
-  "$venv/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-  "$venv/bin/python" -m pip install --quiet textual >/dev/null 2>&1 \
-    || echo "note: failed to install textual into $venv; run \"$venv/bin/pip install textual\" to enable 'fabric'." >&2
-}
-ensure_dash_venv
-
 install_rendered "$repo_root/config/claude-litellm/settings.json" "$prefix/config/claude-litellm/settings.json"
 install_rendered "$repo_root/config/claude-litellm/shell.zsh" "$prefix/config/claude-litellm/shell.zsh"
 
@@ -413,7 +392,7 @@ install_rendered "$repo_root/config/codex-litellm/shell.zsh" "$prefix/config/cod
 install_rendered "$repo_root/docs/AI_AGENT_LITELLM_ARCHITECTURE.md" "$prefix/docs/AI_AGENT_LITELLM_ARCHITECTURE.md"
 install_executable "$repo_root/scripts/uninstall.zsh" "$prefix/scripts/uninstall.zsh"
 
-for script in ai-litellm claude-litellm codex-litellm openrouter-key-status litellm-master-key-status fabric; do
+for script in ai-litellm claude-litellm codex-litellm openrouter-key-status litellm-master-key-status; do
   install_executable "$repo_root/bin/$script" "$prefix/bin/$script"
   install_shim "$script"
 done

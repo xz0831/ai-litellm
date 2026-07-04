@@ -22,7 +22,6 @@ state/
 backups/
 claude-config/
 codex-home/
-opencode-dir/node_modules/
 
 # Un-rendered install placeholder. Running a bin/ wrapper from a checkout
 # (instead of the installed package) mkdir's literal __FABRIC_HOME__ paths

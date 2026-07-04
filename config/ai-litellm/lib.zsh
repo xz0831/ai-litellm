@@ -847,79 +847,6 @@ ai_litellm_harness_template_json() {
   ai_litellm_template_value "$value"
 }
 
-ai_litellm_harness_env_assignments() {
-  local harness="$1"
-  local model_name="$2"
-  local descriptor
-  descriptor="$(ai_litellm_harness_descriptor "$harness")" || return 1
-
-  # Derive per-model token limits from the single source so descriptors can
-  # reference {{limits.context}} / {{limits.output}} in adapterConfig.env.
-  local model_limits ctx_limit out_limit output_budget reservation_output reservation_effective reservation_headroom reservation_minimum
-  model_limits="$(ai_litellm_model_limits "$model_name" 2>/dev/null || true)"
-  if [[ -n "$model_limits" ]]; then
-    ctx_limit="$(print -r -- "$model_limits" | jq -r '.context // empty')"
-    out_limit="$(print -r -- "$model_limits" | jq -r '.output // empty')"
-  fi
-  output_budget="$(ai_litellm_harness_output_budget "$harness" "$model_name" "$model_name" 2>/dev/null || true)"
-  if [[ -n "$output_budget" ]]; then
-    reservation_output="$(print -r -- "$output_budget" | jq -r '.reservation // empty')"
-    reservation_effective="$(print -r -- "$output_budget" | jq -r '.effectiveInput // empty')"
-    reservation_headroom="$(print -r -- "$output_budget" | jq -r '.tokenizerHeadroom // empty')"
-    reservation_minimum="$(print -r -- "$output_budget" | jq -r '.minimumInput // empty')"
-  fi
-
-  node -e '
-const fs = require("fs");
-const descriptor = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const model = process.argv[2];
-const baseUrl = process.argv[3];
-const apiBaseUrl = process.argv[4];
-const ctxLimit = process.argv[5] || "";
-const outLimit = process.argv[6] || "";
-const reservationOutput = process.argv[7] || "";
-const reservationEffective = process.argv[8] || "";
-const reservationHeadroom = process.argv[9] || "";
-const reservationMinimum = process.argv[10] || "";
-const paths = descriptor.paths || {};
-const provider = descriptor.provider || {};
-const providerBaseUrl = String(provider.baseUrl || "")
-  .replaceAll("{{ai.baseUrl}}", baseUrl)
-  .replaceAll("{{ai.apiBaseUrl}}", apiBaseUrl);
-const replacements = new Map([
-  ["{{ai.baseUrl}}", baseUrl],
-  ["{{ai.apiBaseUrl}}", apiBaseUrl],
-  ["{{model}}", model],
-  ["{{provider.name}}", String(provider.name || "")],
-  ["{{provider.baseUrl}}", providerBaseUrl],
-  ["{{provider.basePath}}", String(provider.basePath || "")],
-  ["{{limits.context}}", ctxLimit],
-  ["{{limits.output}}", outLimit],
-  ["{{reservation.output}}", reservationOutput],
-  ["{{reservation.effectiveInput}}", reservationEffective],
-  ["{{reservation.headroom}}", reservationHeadroom],
-  ["{{reservation.minimumInput}}", reservationMinimum],
-]);
-for (const [key, value] of Object.entries(paths)) {
-  replacements.set(`{{paths.${key}}}`, String(value));
-}
-const render = (value) => {
-  let next = String(value);
-  for (const [token, replacement] of replacements) {
-    next = next.replaceAll(token, replacement);
-  }
-  return next;
-};
-for (const [key, value] of Object.entries(descriptor.adapterConfig?.env || {})) {
-  const rendered = render(value);
-  // Skip vars that resolve to empty (e.g. {{limits.context}} when the model has
-  // no configured limit) so optional harness env vars are not injected empty.
-  if (rendered === "") continue;
-  console.log(`${key}\t${rendered}`);
-}
-' "$descriptor" "$model_name" "$(ai_litellm_base_url)" "$(ai_litellm_api_base_url)" "$ctx_limit" "$out_limit" "$reservation_output" "$reservation_effective" "$reservation_headroom" "$reservation_minimum"
-}
-
 # Distinct os.environ/<VAR> references in the registry. Drives generic
 # multi-provider secret injection (not just OpenRouter).
 ai_litellm_config_env_refs() {
@@ -960,31 +887,6 @@ ai_litellm_resolve_secret_var() {
   fi
   ai_litellm_keychain_value "$service" "$account" 2>/dev/null && return 0
   return 1
-}
-
-ai_litellm_harness_secret_value() {
-  local source="$1"
-  case "$source" in
-    litellm-master-key)
-      ai_litellm_master_key
-      ;;
-    openrouter-key)
-      ai_litellm_openrouter_key
-      ;;
-    env:*)
-      ai_litellm_resolve_secret_var "${source#env:}"
-      ;;
-    keychain:*)
-      ai_litellm_keychain_value "${source#keychain:}" "$USER"
-      ;;
-    none|"")
-      return 1
-      ;;
-    *)
-      echo "Unsupported secret source: $source" >&2
-      return 1
-      ;;
-  esac
 }
 
 # Run a command with a wall-clock timeout (macOS ships no `timeout`/`gtimeout`).
@@ -1275,37 +1177,6 @@ ai_litellm_harnesses_json() {
 ai_litellm_harness_info_json() {
   [[ -n "${1:-}" ]] || { printf '{}'; return 0; }
   ai_litellm_harness_one_json "$1"
-}
-
-ai_litellm_harness_parse_model_selection() {
-  local harness="$1"
-  shift
-
-  AI_LITELLM_SELECTED_MODEL=""
-  AI_LITELLM_SELECTED_MODEL_EXPLICIT=0
-  AI_LITELLM_SELECTED_MODEL_CONSUMED=0
-
-  local first_arg="${1:-}"
-  if [[ -n "$first_arg" && "$first_arg" != -* ]] && ! ai_litellm_harness_is_subcommand "$harness" "$first_arg"; then
-    local resolved_first_arg
-    resolved_first_arg="$(ai_litellm_model_resolve "$first_arg" 2>/dev/null)" || resolved_first_arg=""
-    if [[ -n "$resolved_first_arg" ]]; then
-      AI_LITELLM_SELECTED_MODEL="$resolved_first_arg"
-      AI_LITELLM_SELECTED_MODEL_EXPLICIT=1
-      AI_LITELLM_SELECTED_MODEL_CONSUMED=1
-    fi
-  fi
-
-  if [[ -z "$AI_LITELLM_SELECTED_MODEL" ]]; then
-    AI_LITELLM_SELECTED_MODEL="$(ai_litellm_harness_default_model "$harness")" || {
-      echo "Missing default model for harness: $harness" >&2
-      return 1
-    }
-  fi
-  ai_litellm_model_exists "$AI_LITELLM_SELECTED_MODEL" || {
-    echo "Unknown $harness LiteLLM model_name: $AI_LITELLM_SELECTED_MODEL" >&2
-    return 1
-  }
 }
 
 ai_litellm_launch() {
@@ -5894,14 +5765,45 @@ ai_litellm_cmd_doctor() {
   esac
 }
 
-ai_litellm_cmd_router() {
-  command -v python3 >/dev/null 2>&1 || {
-    echo "ai-litellm router requires python3" >&2
-    return 1
-  }
-  AI_LITELLM_ROUTER_BINARY="$AI_LITELLM_BIN_DIR/ai-litellm" \
-  PYTHONPATH="$AI_LITELLM_CONFIG_HOME/ai-litellm${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -m router_core "$@"
+# One-shot control-plane summary. Composes EXISTING read surfaces only — no
+# state re-derivation (same contract as --json). Degraded sections render as
+# empty/not-running instead of aborting, so the command always exits 0
+# (observability command; mirrors the empty-output honesty of the json API).
+ai_litellm_cmd_status() {
+  case "${1:-}" in
+    ""|--json) ;;
+    *)
+      echo "Usage: ai-litellm status [--json]" >&2
+      return 1
+      ;;
+  esac
+  if [[ "${1:-}" == "--json" ]]; then
+    node -e '
+const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+const [proxy, harnesses, runtimes, keys, models] = process.argv.slice(1).map(parse);
+process.stdout.write(JSON.stringify({ proxy, harnesses, runtimes, keys, models }) + "\n");
+' "$(ai_litellm_status_json)" "$(ai_litellm_harnesses_json)" "$(ai_litellm_runtime_status_json)" "$(ai_litellm_key_status_json)" "$(ai_litellm_list_json)"
+    return 0
+  fi
+  ai_litellm_status
+  echo
+  echo "harness model mappings:"
+  # alias get emits a compact JSON array of {tier, model, ...}; reformat the
+  # already-fetched data for humans (raw-indented passthrough on parse failure).
+  ai_litellm_cmd_harness alias get claude 2>/dev/null | node -e '
+const input = require("fs").readFileSync(0, "utf8");
+try {
+  for (const e of JSON.parse(input)) console.log("  claude " + e.tier + " -> " + e.model);
+} catch {
+  if (input) process.stdout.write(input.replace(/^/gm, "  "));
+}
+'
+  echo "  codex default: $(ai_litellm_harness_json codex models.default 2>/dev/null || printf 'unknown')"
+  echo
+  ai_litellm_key_status
+  echo
+  ai_litellm_capabilities
+  return 0
 }
 
 ai_litellm_codex_facade_json() {
@@ -5996,6 +5898,7 @@ ai_litellm_usage() {
   cat <<'EOF'
 Usage: ai-litellm <group> <verb> [args]
 
+  Status:        ai-litellm status [--json]  Proxy/harness/runtime/key/capability one-shot summary
   Proxy:         ai-litellm proxy status|start|stop|restart|logs [lines]|doctor [opts]
   Harness:       ai-litellm harness list|info <name>|launch <name> [model] [args...]
                  ai-litellm harness reasoning [name]
@@ -6016,9 +5919,7 @@ Usage: ai-litellm <group> <verb> [args]
   Uninstall:     ai-litellm uninstall     Remove package directory and global shims
   Codex:         ai-litellm codex facade get [--json]
                  ai-litellm codex facade set <facade> <source_model_name>
-  Router:        ai-litellm router schema|snapshot|plan|explain|execute --json [intent opts]
   Capabilities:  ai-litellm capabilities  Proxy + runtime capability summary
-  Dash:          ai-litellm dash          Launch the fabric control-plane TUI (or run: fabric)
 
 Reasoning effort values (not a command — pass to reasoning/harness set):
   OpenRouter none|minimal|low|medium|high|xhigh   Claude auto|low|medium|high|xhigh|max
@@ -6035,6 +5936,7 @@ ai_litellm() {
     -h|--help|"") ai_litellm_usage ;;
 
     # ── Canonical noun-verb groups ──
+    status)       ai_litellm_cmd_status "$@" ;;
     proxy)        ai_litellm_cmd_proxy "$@" ;;
     harness)      ai_litellm_cmd_harness "$@" ;;
     runtime)      ai_litellm_cmd_runtime "$@" ;;
@@ -6046,30 +5948,14 @@ ai_litellm() {
     audit)        ai_litellm_cmd_audit "$@" ;;
     doctor)       ai_litellm_cmd_doctor "$@" ;;
     key)          ai_litellm_cmd_key "$@" ;;
-    router)       ai_litellm_cmd_router "$@" ;;
     sync|--sync)  ai_litellm_sync "$@" ;;
     uninstall)    ai_litellm_uninstall "$@" ;;
     capabilities|--capabilities) ai_litellm_capabilities ;;
-    dash)
-      # NOTE: the main dispatcher already shifted the group word (line ~6123),
-      # so "$@" here is the dash args. Do NOT shift again (that dropped the
-      # first arg, e.g. --help, and silently launched the TUI instead).
-      local fabric_py="$AI_LITELLM_STATE_HOME/dash-venv/bin/python"
-      if [[ ! -x "$fabric_py" ]]; then
-        echo "fabric: dashboard venv missing at $AI_LITELLM_STATE_HOME/dash-venv" >&2
-        echo "  create it: python3 -m venv \"$AI_LITELLM_STATE_HOME/dash-venv\" && \"$AI_LITELLM_STATE_HOME/dash-venv/bin/pip\" install textual" >&2
-        echo "  (or re-run scripts/install.zsh)" >&2
-        return 1
-      fi
-      PYTHONPATH="$AI_LITELLM_CONFIG_HOME/ai-litellm${PYTHONPATH:+:$PYTHONPATH}" \
-        "$fabric_py" -m fabric_dash "$@"
-      ;;
 
     # ── Deprecated flat aliases (still work; warn + delegate) ──
     start|--start)               ai_litellm_deprecated start "proxy start"; ai_litellm_start ;;
     stop|--stop)                 ai_litellm_deprecated stop "proxy stop"; ai_litellm_stop ;;
     restart|--restart)           ai_litellm_deprecated restart "proxy restart"; ai_litellm_restart ;;
-    status|--status)             ai_litellm_deprecated status "proxy status"; ai_litellm_status ;;
     logs|--logs)                 ai_litellm_deprecated logs "proxy logs"; ai_litellm_logs "$@" ;;
     --doctor)                    ai_litellm_deprecated --doctor "doctor"; ai_litellm_cmd_doctor "$@" ;;
     list|--list)                 ai_litellm_deprecated list "model list"; ai_litellm_list ;;

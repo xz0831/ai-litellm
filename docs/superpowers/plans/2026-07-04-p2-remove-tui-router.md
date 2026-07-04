@@ -112,7 +112,7 @@ Expected: D 항목들만 추가됨(+.gitignore M). `config/ai-litellm/`에 `fabr
 ### Task 3: lib.zsh — dash/router 디스패치 + cmd_router + 고아 헬퍼 3개 제거
 
 **Files:**
-- Modify: `config/ai-litellm/lib.zsh:850-905`, `:965-988`, `:1280-1311`, `:5897-5905`, `:6019`, `:6021`, `:6049`, `:6053-6068`
+- Modify: `config/ai-litellm/lib.zsh:850-921`, `:965-988`, `:1280-1309`, `:5897-5905`, `:6019`, `:6021`, `:6049`, `:6053-6066`
 
 **Interfaces:**
 - Consumes: T2의 파일 삭제 (router_core 부재 → cmd_router가 dangling).
@@ -122,9 +122,9 @@ Expected: D 항목들만 추가됨(+.gitignore M). `config/ai-litellm/`에 `fabr
 
 각각 `함수명() {` 부터 짝이 되는 컬럼-0 `}` 까지 전체 삭제. 셋 다 repo 전체에서 호출자 0임이 P1 최종 리뷰에서 검증됨:
 
-- `ai_litellm_harness_env_assignments() {` (L850-905, 내부 `{{limits.*}}` 템플릿 주석 포함)
+- `ai_litellm_harness_env_assignments() {` (L850-921 — L905의 }는 내장 node -e JS 문자열 내부 for-루프의 닫는 중괄호이므로 함수 끝이 아님; 진짜 컬럼-0 끝은 L921)
 - `ai_litellm_harness_secret_value() {` (L965-988)
-- `ai_litellm_harness_parse_model_selection() {` (L1280-1311)
+- `ai_litellm_harness_parse_model_selection() {` (L1280-1309 — L1311은 다음 함수 ai_litellm_launch의 시작)
 
 삭제 후: `grep -c "ai_litellm_harness_env_assignments\|ai_litellm_harness_secret_value\|ai_litellm_harness_parse_model_selection" config/ai-litellm/lib.zsh` == 0
 
@@ -144,10 +144,10 @@ ai_litellm_cmd_router() {
 
 함수 전체 삭제. (뒤따르는 `ai_litellm_codex_facade_json`은 P4 전까지 유지 — 건드리지 않는다.)
 
-- [ ] **Step 3: 디스패치에서 router/dash 제거 (L6049, L6053-6068)**
+- [ ] **Step 3: 디스패치에서 router/dash 제거 (L6049, L6053-6066)**
 
 - `    router)       ai_litellm_cmd_router "$@" ;;` 1줄 삭제
-- `    dash)` case 브랜치 전체(NOTE 주석 4줄 + venv 체크 + PYTHONPATH 실행 + `;;`) 삭제 — 앵커: `local fabric_py="$AI_LITELLM_STATE_HOME/dash-venv/bin/python"`
+- `    dash)` case 브랜치 전체(NOTE 주석 3줄 + venv 체크 + PYTHONPATH 실행 + `;;`) 삭제 — 앵커: `local fabric_py="$AI_LITELLM_STATE_HOME/dash-venv/bin/python"`
 
 - [ ] **Step 4: usage 텍스트 정리 (L6019, L6021)**
 
