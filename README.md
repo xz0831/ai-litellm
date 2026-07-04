@@ -56,8 +56,8 @@ Tracked source:
   (rationale, rejected alternatives, standing counter-arguments, honest unknowns)
 - `docs/APPLYING_MODELS_TO_HARNESSES.md`: practitioner playbook — given a model
   (cloud/OpenRouter or local/oMLX), how to apply it to Claude Code / Codex with
-  the context & token budgeting right, with worked examples (DeepSeek-V4-Pro,
-  Kimi-K2.6, GLM-5.2, local Qwen3.6)
+  the context & token budgeting right, with worked examples (Kimi-K2.7-Code,
+  GLM-5.2, Mimo-V2.5, local Qwen3.6)
 - `scripts/install.zsh`: installer for another Mac
 - `scripts/uninstall.zsh`: package/shim remover
 
@@ -209,27 +209,29 @@ wrapper resolves them back to the configured `model_name` without duplicating
 routes in git:
 
 ```zsh
-ai-litellm model limits openrouter/deepseek/deepseek-v4-pro
-ai-litellm model info openrouter/deepseek/deepseek-v4-pro
+ai-litellm model limits openrouter/z-ai/glm-5.2
+ai-litellm model info openrouter/z-ai/glm-5.2
 ```
 
-For Codex, a raw provider slug is resolved to a Codex-safe facade such as
-`gpt-5.5` when that backend is shared by multiple routes. The same provider
-slug can be used in place of the model argument in the harness smoke tests
-below.
+Codex has no `gpt-*` facades: a raw provider slug resolves to the same real
+`model_name` the LiteLLM registry already uses, and the generated Codex
+catalog is a **mirror of the registry** — every entry in
+`config/ai-litellm/harnesses/codex.json`'s `models.catalogEntries` is a real
+surface name, not a disguise. The same real name can be used in place of the
+model argument in the harness smoke tests below.
 
-The default tiers/facades map to non-Anthropic backends (current as of
-2026-06-20; the source of truth is `config/claude-litellm/settings.json` and
+The default tiers/routes map to non-Anthropic backends (current as of
+2026-07-04; the source of truth is `config/claude-litellm/settings.json` and
 `config/litellm_config.yaml`):
 
-- Claude Code proxy tiers: `fable`=GLM-5.2, `opus`=DeepSeek-V4-Pro,
-  `sonnet`=Kimi-K2.6, `haiku`=local oMLX gemma. In `--direct` mode `haiku`
-  falls back to GLM-5.2 (the local route has no LiteLLM lane).
-- Codex facades: `gpt-5.5`/`gpt-5.2`=GLM-5.2, `gpt-5.4`=DeepSeek,
-  `gpt-5.4-mini`=Kimi, `gpt-5.3-codex`=local gemma. These slugs are Codex's
-  own `--bundled` catalog names on purpose: the isolated, logged-out
-  `codex-litellm` clones Codex's `--bundled` baseline, so a login-only active
-  slug (e.g. `gpt-5.3-codex-spark`) would have no matching route.
+- Claude Code proxy tiers: `fable`=Kimi-K2.7-Code, `opus`=GLM-5.2,
+  `sonnet`=Mimo-V2.5, `haiku`=local oMLX Qwen3.6-27B. In `--direct` mode
+  `haiku` falls back to Mimo-V2.5 (the local route has no LiteLLM lane).
+- Codex: real names throughout — `Kimi-K2.7-Code-openrouter`,
+  `GLM-5.2-openrouter` (also Codex's default model), `Mimo-V2.5-openrouter`,
+  `Qwen3.6-27B-omlx` — plus `codex-auto-review`, a hidden bundled-catalog slug
+  Codex's `review` subcommand hardcodes a request for (repointed to the
+  Kimi-K2.7-Code backend). `codex-litellm` shortcuts: `kimi`/`glm`/`mimo`/`qwen`.
 
 Then test one harness. Claude Code defaults to the LiteLLM proxy path:
 tier aliases map to the curated non-Anthropic routes (the haiku tier is a
@@ -251,7 +253,7 @@ cannot ride this lane — there is no LiteLLM in the path:
 
 ```zsh
 claude-litellm --direct sonnet -p 'Reply with exactly OK' --no-session-persistence --tools ''
-claude-litellm Gemma4-12B-omlx -p 'Reply with exactly LOCAL_OK' --no-session-persistence --tools ''
+claude-litellm Qwen3.6-27B-omlx -p 'Reply with exactly LOCAL_OK' --no-session-persistence --tools ''
 ```
 
 ## Local Models
@@ -259,9 +261,14 @@ claude-litellm Gemma4-12B-omlx -p 'Reply with exactly LOCAL_OK' --no-session-per
 The repository tracks local runtime wiring, not model weights. OpenRouter routes
 are curated recommendations, but local oMLX models are machine-specific.
 
-`Gemma4-12B-omlx` remains a sample/recommended route. When oMLX is running,
-`ai-litellm sync` also reads `http://127.0.0.1:8000/v1/models` and generates
-routes for the models this computer actually serves, such as:
+`Qwen3.6-27B-omlx` is the current sample/recommended route (also the `haiku`
+tier target). A Gemma route is no longer a permanent registry entry or tier
+target, but that's a lineup choice, not a capability limit: if this
+computer's oMLX still serves a Gemma model, `ai-litellm sync` still lists it
+as a discovered route — it just won't survive reinstall/discovery on its own
+and nothing points a tier at it. When oMLX is running, `ai-litellm sync` also
+reads `http://127.0.0.1:8000/v1/models` and generates routes for the models
+this computer actually serves, such as:
 
 ```zsh
 ai-litellm runtime status omlx

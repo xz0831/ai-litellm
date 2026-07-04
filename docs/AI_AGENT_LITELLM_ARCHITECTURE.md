@@ -51,7 +51,7 @@ flowchart LR
 | LiteLLM provider/model registry | `__FABRIC_HOME__/config/litellm_config.yaml` |
 | 모델별 토큰 한도 단일 출처 (`x-limits:` 앵커) | `__FABRIC_HOME__/config/litellm_config.yaml` |
 | Claude direct/proxy alias/default/display names | `__FABRIC_HOME__/config/claude-litellm/settings.json` |
-| Codex LiteLLM shortcuts | `__FABRIC_HOME__/config/codex-litellm/settings.json` |
+| Codex LiteLLM aliases | `__FABRIC_HOME__/config/codex-litellm/settings.json` |
 | Harness descriptor schema | `__FABRIC_HOME__/config/ai-litellm/harnesses/schema.json` |
 | Claude harness descriptor | `__FABRIC_HOME__/config/ai-litellm/harnesses/claude.json` |
 | Codex harness descriptor | `__FABRIC_HOME__/config/ai-litellm/harnesses/codex.json` |
@@ -98,7 +98,6 @@ ai-litellm harness list|info <name>|launch <name> [model] [args...]|alias get <n
 ai-litellm runtime list|status [name]|doctor <name>
 ai-litellm model   list|info [model]|limits [model]|refresh-capabilities [opts]|reasoning [model|allowed <model>|set <model> <effort>|unset <model>]|capabilities
 ai-litellm route   list|info [model]|probe [model...]
-ai-litellm codex   facade get [--json]|facade set <facade> <source_model_name>
 ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]|doctor
 ai-litellm reasoning matrix [model]|probe <model> [effort]|doctor
 ai-litellm audit model-policy
@@ -141,14 +140,14 @@ read-only 명령군에 `--json` 출력이 추가됐다. `--json`은 **순수 출
 
 ```zsh
 ai-litellm model list
-ai-litellm model info gpt-5.5
+ai-litellm model info GLM-5.2-openrouter
 ai-litellm model limits          # 모델별 context/output 한도 표 (단일 출처)
 ai-litellm model refresh-capabilities --check  # OpenRouter 정본과 x-limits drift 확인
 ai-litellm reasoning matrix      # provider/backend reasoning capability 표
-ai-litellm reasoning probe gpt-5.5 xhigh
+ai-litellm reasoning probe GLM-5.2-openrouter xhigh
 ai-litellm reasoning doctor
-ai-litellm model reasoning set gpt-5.4 none
-ai-litellm model reasoning unset gpt-5.4
+ai-litellm model reasoning set Kimi-K2.7-Code-openrouter none
+ai-litellm model reasoning unset Kimi-K2.7-Code-openrouter
 ai-litellm harness reasoning     # harness adapter reasoning resolver preview
 ai-litellm harness reasoning set codex high
 ai-litellm harness reasoning unset codex
@@ -162,7 +161,7 @@ ai-litellm audit model-policy
 ai-litellm doctor                # 전체 배터리(proxy+context+reasoning+policy)
 ai-litellm route info
 ai-litellm route probe           # 모든 모델 (인자로 좁힘; 과거 'model probe'는 deprecated)
-ai-litellm route probe Gemma4-12B-omlx
+ai-litellm route probe Qwen3.6-27B-omlx
 ai-litellm harness list
 ai-litellm harness info claude
 ai-litellm harness info codex
@@ -216,9 +215,9 @@ ai-litellm harness launch codex exec --skip-git-repo-check --sandbox read-only "
 
 ## 토큰 한도 / Context Window 관리
 
-LiteLLM-backed 모델별 context window(`max_input_tokens`)와 max output(`max_output_tokens`)의 단일 출처는 `litellm_config.yaml`의 `x-limits:` 앵커다. **underlying provider 모델당 앵커 1개**를 두고, 모든 surface 엔트리가 `model_info: *alias`로 참조한다. 8개의 surface model_name이 4개의 underlying 모델로 수렴하므로, facade가 늘어도 한도는 underlying 앵커에만 붙는다.
+LiteLLM-backed 모델별 context window(`max_input_tokens`)와 max output(`max_output_tokens`)의 단일 출처는 `litellm_config.yaml`의 `x-limits:` 앵커다. **underlying provider 모델당 앵커 1개**를 두고, 모든 surface 엔트리가 `model_info: *alias`로 참조한다. 6개의 surface model_name이 4개의 underlying 모델로 수렴하므로(예: `codex-auto-review`는 `Kimi-K2.7-Code-openrouter`와 같은 앵커를 공유), surface가 늘어도 한도는 underlying 앵커에만 붙는다.
 
-입력 편의를 위해 wrapper는 `model_name`뿐 아니라 `litellm_params.model` 값도 resolver 입력으로 받는다. 예를 들어 `openrouter/deepseek/deepseek-v4-pro` 또는 `deepseek/deepseek-v4-pro`는 registry의 기존 route로 해석된다. 이는 중복 route를 git에 추가하는 것이 아니라 실행 직전 canonical `model_name`으로 매핑하는 UX 계층이다. Codex는 catalog에 없는 raw provider-facing 이름을 직접 넘기면 실패할 수 있으므로, 같은 backend를 가리키는 Codex-safe facade(`gpt-5.5` 등)가 있으면 그 facade를 우선 선택한다.
+입력 편의를 위해 wrapper는 `model_name`뿐 아니라 `litellm_params.model` 값도 resolver 입력으로 받는다. 예를 들어 `openrouter/z-ai/glm-5.2` 또는 `z-ai/glm-5.2`는 registry의 기존 route로 해석된다. 이는 중복 route를 git에 추가하는 것이 아니라 실행 직전 canonical `model_name`으로 매핑하는 UX 계층이다. Codex는 catalog에 없는 raw provider-facing 이름을 직접 넘기면 실패할 수 있으므로, 같은 backend를 가리키는 registry entry가 여럿이면(예: `codex-auto-review`와 `Kimi-K2.7-Code-openrouter`가 같은 Kimi 백엔드를 공유) descriptor의 `models.catalogEntries`에 실제로 노출되는(카탈로그에 slug로 등재된) 이름을 우선 선택한다 — gpt-* facade가 있던 시절의 "codex-safe facade를 우선 선택"이 남긴 규칙이 실명 시대에는 "카탈로그에 실린 이름을 우선 선택"으로 축소된 것이다.
 
 각 숫자는 `x_input_confidence` / `x_output_confidence` / `x_reasoning_confidence`로 출처를 표시한다. OpenRouter가 공개한 값은 `provider`, 로컬 probe가 확정한 값은 `observed`, provider가 공개하지 않아 의도적으로 낮춰 둔 정책 cap은 `owned-policy`다. `local-config`가 남아 있으면 아직 정본/관측/정책 중 어디에도 속하지 않은 값이므로 audit 대상이다.
 
@@ -239,25 +238,25 @@ CODEX model-catalog.context_window = effective_input
 
 이 분리는 harness별 runtime 예약에만 적용한다. Codex catalog는 capability source가 아니라 `codex-litellm` 전용 compatibility shim이므로 raw provider window 대신 safe input window를 기록한다. raw LiteLLM client와 future harness의 초과 출력 예약은 proxy-level C4 hook(`ai_litellm_callbacks.output_clamp.proxy_handler_instance`)이 deployment 직전에 `max_tokens`/`max_completion_tokens`를 model-aware safe cap으로 낮춘다. 같은 hook은 `x-gateway-cost-guardrail`의 estimated-token 상한도 적용해 거대 prompt를 provider dispatch 전에 거부한다. doctor는 이 hook과 `x-gateway-output-clamp`/`x-gateway-cost-guardrail` 정책이 빠지면 실패한다.
 
-native Codex/Claude의 제품 세션 budget은 이 앵커를 상속하지 않는다. OpenAI API의 `gpt-5.5` context, Codex App/CLI OAuth context, Codex LiteLLM facade context는 서로 다른 claim으로 관리한다.
+native Codex/Claude의 제품 세션 budget은 이 앵커를 상속하지 않는다. OpenAI API가 선언하는 모델별 context, Codex App/CLI OAuth context, Codex LiteLLM 생성 카탈로그의 context는 서로 다른 claim으로 관리한다.
 
 ```yaml
 x-limits:
-  kimi_k26: &kimi_k26
-    max_input_tokens: 262142
-    max_output_tokens: 262142
+  kimi_k27_code: &kimi_k27_code
+    max_input_tokens: 262144
+    max_output_tokens: 16384
     supports_reasoning: true
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
     x_output_confidence: provider
     x_output_source: openrouter.top_provider.max_completion_tokens
 model_list:
-  - model_name: Kimi-K2.6
-    litellm_params: { model: openrouter/moonshotai/kimi-k2.6, api_key: os.environ/OPENROUTER_API_KEY }
-    model_info: *kimi_k26
-  - model_name: gpt-5.4        # 같은 underlying → 같은 앵커
-    litellm_params: { model: openrouter/moonshotai/kimi-k2.6, api_key: os.environ/OPENROUTER_API_KEY }
-    model_info: *kimi_k26
+  - model_name: Kimi-K2.7-Code-openrouter
+    litellm_params: { model: openrouter/moonshotai/kimi-k2.7-code, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: *kimi_k27_code
+  - model_name: codex-auto-review   # 같은 underlying → 같은 앵커 (Codex `review`가 하드코딩하는 hidden slug)
+    litellm_params: { model: openrouter/moonshotai/kimi-k2.7-code, api_key: os.environ/OPENROUTER_API_KEY }
+    model_info: *kimi_k27_code
 ```
 
 `x-limits:`는 LiteLLM이 모르는 최상위 키라 `safe_load`가 무시한다. `model_info`에는 public token/capability metadata만 두며 secret은 들어가지 않는다.
@@ -273,8 +272,8 @@ model_list:
 Claude는 gateway에서 context window를 자동 discovery하지 못하므로(검증된 한계) launch 시 env로 주입한다. Claude의 `AUTO_COMPACT_WINDOW`은 tier가 믿는 window(200K, `[1m]`이면 1M) 아래로만 낮출 수 있다. 공유 윈도우 provider에서는 Claude의 compact threshold를 `effective_input`으로 낮춰 provider 거부 전에 압축이 걸리게 한다. 어느 경우든 LiteLLM pre-call enforcement가 진짜 한도를 강제하는 최종 backstop이다.
 
 ```zsh
-ai-litellm model limits            # 모델별 context/output 표
-ai-litellm model limits gpt-5.4    # 특정 모델
+ai-litellm model limits                        # 모델별 context/output 표
+ai-litellm model limits Kimi-K2.7-Code-openrouter  # 특정 모델
 ai-litellm model refresh-capabilities
 ai-litellm model refresh-capabilities --apply  # provider가 공개한 drift만 반영
 ai-litellm proxy doctor            # "harness configs match single-source limits"로 staleness 점검
@@ -288,7 +287,7 @@ context budget은 다음 층위로 분리해서 본다.
 
 | 층위 | 예 | 관리 원칙 |
 | --- | --- | --- |
-| native product/session | `codex`, `claude` | provider/API 또는 LiteLLM facade 값을 자동 상속하지 않는다. 공식 문서와 local startup metadata로만 판단한다. |
+| native product/session | `codex`, `claude` | provider/API 또는 LiteLLM 생성 카탈로그 값을 자동 상속하지 않는다. 공식 문서와 local startup metadata로만 판단한다. |
 | provider/API declared | OpenAI API `gpt-5.5`, OpenRouter `/models` | provider가 선언한 모델 한도. routing endpoint별 실제 cap과 다를 수 있으므로 `source_confidence`를 둔다. |
 | LiteLLM route enforced | `model_info.max_input_tokens`, `enable_pre_call_checks` | oversized prompt를 provider로 보내기 전에 거부하는 gateway backstop. |
 | harness metadata/compaction | Codex catalog, Claude auto compact | 실제 provider enforcement인지, 표시/compaction/accounting인지 구분한다. |
@@ -387,7 +386,7 @@ ai-litellm context probe record claude-litellm opus DeepSeek-V4-Pro 211580 \
 
 중요한 판정 규칙:
 
-- native Codex surface는 LiteLLM facade 한도를 상속하지 않는다.
+- native Codex surface는 LiteLLM 생성 카탈로그 한도를 상속하지 않는다.
 - API model spec은 OAuth/App spec이 아니다. 공식 문서나 local startup metadata가 없으면 `unknown` 또는 `inactive`로 둔다.
 - OpenRouter `/models.context_length`는 model-level metadata이며, endpoint routing별 실제 cap 검증과 구분한다.
 - runtime capability가 더 크더라도 LiteLLM `model_info.max_input_tokens`가 낮으면 현재 effective input budget은 policy cap 쪽이다.
@@ -403,11 +402,11 @@ reasoning, effort, thinking은 두 레이어로 분리한다.
 
 ```zsh
 ai-litellm reasoning matrix         # model_name -> provider/backend reasoning capability
-ai-litellm reasoning matrix gpt-5.5
-ai-litellm reasoning probe gpt-5.5 xhigh
+ai-litellm reasoning matrix GLM-5.2-openrouter
+ai-litellm reasoning probe GLM-5.2-openrouter xhigh
 ai-litellm reasoning doctor
-ai-litellm model reasoning set gpt-5.4 none
-ai-litellm model reasoning unset gpt-5.4
+ai-litellm model reasoning set Kimi-K2.7-Code-openrouter none
+ai-litellm model reasoning unset Kimi-K2.7-Code-openrouter
 ai-litellm harness reasoning        # harness selection -> resolved model -> effective preview
 ai-litellm harness reasoning claude
 ai-litellm harness reasoning set claude xhigh
@@ -423,13 +422,13 @@ ai-litellm harness reasoning set codex high
 | `default` | route에 설정된 provider default. `ai-litellm model reasoning set`이 쓰는 값은 `reasoning_effort`다. |
 | `local_wire` | 현재 LiteLLM adapter가 OpenAI-style parameter로 받아준다고 선언한 wire key. 비어 있으면 local LiteLLM은 해당 parameter를 지원한다고 보지 않는다. |
 | `drop_risk` | `declared=yes`인데 `litellm_cap=no`인 경우, `drop_params:true` 때문에 요청 parameter가 조용히 떨어질 수 있는지. |
-| `observed` | bounded probe 결과. `yes(N)`은 `reasoning_tokens` 또는 reasoning field가 관측됐다는 뜻이고, `no(0)`은 해당 probe에서는 관측되지 않았다는 뜻이다. 같은 backend를 공유하는 facade는 backend-level observation을 같이 보여준다. |
+| `observed` | bounded probe 결과. `yes(N)`은 `reasoning_tokens` 또는 reasoning field가 관측됐다는 뜻이고, `no(0)`은 해당 probe에서는 관측되지 않았다는 뜻이다. 같은 backend를 공유하는 surface는 backend-level observation을 같이 보여준다. |
 
 즉 `declared=yes`는 실제 wire 도달을 뜻하지 않는다. 현재 OpenRouter route는 provider 문서상 unified `reasoning`을 지원하더라도, local LiteLLM adapter가 `reasoning_effort`를 지원한다고 보지 않으면 `drop_risk=high(drop)`으로 표시한다.
 
 `ai-litellm reasoning probe <model> [effort]`는 proxy가 이미 떠 있을 때만 작은 chat-completions 요청을 보내고, 응답의 `usage.completion_tokens_details.reasoning_tokens`, `message.reasoning`, `reasoning_content`, `reasoning_details`를 관측한다. proxy를 자동 시작하지 않으며, 결과는 secret 없는 `__FABRIC_HOME__/state/ai-litellm/reasoning-observations.json`에 최신 model별 observation으로 저장되어 `observed` 컬럼에 반영된다. 이 파일은 evidence cache이지 source of truth가 아니다. `no(0)`은 “이 probe에서는 reasoning을 보지 못했다”는 뜻이지, provider가 reasoning을 절대 지원하지 않는다는 증명은 아니다.
 
-`set`/`unset`은 **underlying 모델 단위로** 동작한다. 토큰 한도 anchor와 같은 single-source 불변식을 지키기 위해, 한 surface model_name에 `set`하면 같은 backend를 가리키는 모든 facade에 동일하게 적용된다(예: `gpt-5.4` 설정 시 `Kimi-K2.6`·`gpt-5.4`·`gpt-5.4-mini` 모두). wire field는 LiteLLM의 계약된 키인 `reasoning_effort`를 쓴다(raw top-level `reasoning:` 키는 비계약 passthrough라 쓰지 않는다 — LiteLLM이 OpenRouter는 `reasoning:{effort}`, OpenAI는 `reasoning_effort`로 매핑한다). 허용값: OpenRouter `none|minimal|low|medium|high|xhigh`, OpenAI `minimal|low|medium|high`.
+`set`/`unset`은 **underlying 모델 단위로** 동작한다. 토큰 한도 anchor와 같은 single-source 불변식을 지키기 위해, 한 surface model_name에 `set`하면 같은 backend를 가리키는 모든 surface에 동일하게 적용된다(예: `Kimi-K2.7-Code-openrouter` 설정 시 같은 Kimi 백엔드/앵커를 공유하는 `codex-auto-review`도 함께 적용됨). wire field는 LiteLLM의 계약된 키인 `reasoning_effort`를 쓴다(raw top-level `reasoning:` 키는 비계약 passthrough라 쓰지 않는다 — LiteLLM이 OpenRouter는 `reasoning:{effort}`, OpenAI는 `reasoning_effort`로 매핑한다). 허용값: OpenRouter `none|minimal|low|medium|high|xhigh`, OpenAI `minimal|low|medium|high`.
 
 주의: `openrouter/deepseek/*` route는 LiteLLM upstream 버그(#27439)로 effort 단계가 on/off로 평탄화될 수 있다. 단계 구분이 중요한 모델은 `extra_body.reasoning.effort` 사용을 고려한다.
 
@@ -438,7 +437,7 @@ ai-litellm harness reasoning set codex high
 | 컬럼 | 의미 |
 | --- | --- |
 | `adapter` | descriptor의 harness adapter. 새 harness는 이 adapter 의미를 공통 schema로 번역한다. |
-| `selection` | harness 사용자가 고르는 이름. Claude는 `opus` 같은 tier, Codex는 `gpt-5.4` 같은 surface model. |
+| `selection` | harness 사용자가 고르는 이름. Claude는 `opus` 같은 tier, Codex는 `GLM-5.2-openrouter` 같은 surface model. |
 | `resolved_model` | LiteLLM `model_name`으로 해석된 값. |
 | `prov_reas` | 해당 backend가 provider reasoning control을 지원하는지. |
 | `control` | harness가 reasoning intent를 갖는지(`intent`) 또는 provider default에 맡기는지(`none`). |
@@ -471,7 +470,7 @@ OpenRouter 모델은 curated recommendation으로 고정 alias를 둔다. 반대
 runtime별 concrete model name은 `<모델>-<런타임 소문자>` suffix 컨벤션을 따른다(런타임 이름에서 자동 생성).
 
 ```zsh
-Gemma4-12B-omlx
+Qwen3.6-27B-omlx
 Qwen3.5-9B-MLX-8bit-omlx
 ```
 
@@ -548,7 +547,7 @@ security find-generic-password -s brave-search-api-key -a "$USER" >/dev/null && 
 
 1. `__FABRIC_HOME__/config/litellm_config.yaml`에 provider-facing model을 추가한다. underlying 모델의 토큰 한도가 새로우면 `x-limits:`에 앵커 1개를 추가하고, 새 `model_list` 엔트리는 `model_info: *alias`로 그 앵커를 참조한다.
 2. Claude에서 쓸 모델이면 `__FABRIC_HOME__/config/claude-litellm/settings.json`의 alias를 바꾼다.
-3. Codex에서 쓸 **cloud** 모델이면 새 `model_list` 엔트리의 `model_name`을 **이미 존재하는 Codex `--bundled` catalog slug**로 두고 같은 backend를 `model_info: *alias`로 참조한다. surface명 == bundled slug여야 Codex의 picker/기본값/reasoning level이 그대로 동작한다(DESIGN_RATIONALE §3). **반드시 `--bundled` slug여야 한다**: isolated·logged-out `codex-litellm`은 native `codex`의 `--bundled` 기준선만 본다(`gpt-5.3-codex`/`gpt-5.2` 등). `gpt-5.3-codex-spark`처럼 network/login으로 native `~/.codex`에 fetch되는 active-only slug는 facade로 쓸 수 없다(2026-06-20 결정 로그). cloud facade는 `__FABRIC_HOME__/config/ai-litellm/harnesses/codex.json`을 **수정하지 않는다** — `codex.json`의 `localCatalogEntries`는 **local-runtime 모델 전용**이다(이때만 그 슬러그가 생성 카탈로그에 다시 붙는다). 정본 레시피는 [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md) §3.
+3. Codex에서 쓸 모델이면(cloud든 local이든) 같은 `model_list` 엔트리의 실명 `model_name`을 그대로 Codex surface에도 쓴다 — 더 이상 별도 `--bundled` 슬러그로 위장하지 않는다(2026-07-04 실명 전환 결정 로그; 옛 facade 결정과 그 대체 표기는 DESIGN_RATIONALE §3 참조, T0b 스파이크가 codex-core의 커스텀 슬러그 수용을 실증). `__FABRIC_HOME__/config/ai-litellm/harnesses/codex.json`의 `models.catalogEntries`(cloud+local 통합 노출 목록)에 그 `model_name`을 `slug`로 하는 엔트리 1줄 — `{ "slug", "displayName", "description", "priority", ["defaultReasoningLevel"] }` — 을 추가한다. 생성기가 이 슬러그를 `models.catalogBaseSlug`(스키마 템플릿, 현재 `gpt-5.4-mini`) 모양으로 clone해 카탈로그에 append하고, context window는 기존과 동일하게 `x-limits` 앵커 − `outputReservation`에서 파생한다. 번들 `codex debug models --bundled` fetch는 이제 (a) 이 스키마 템플릿 소스와 (b) **보존 규칙**(번들 엔트리는 registry에 매칭 라우트가 있는 슬러그만 생존 — `codex-auto-review`처럼 hidden slug라도 라우트가 있으면 생존) 용도로만 남는다. "카탈로그에 있는데 proxy가 모르는 유령 모델"이 구조적으로 불가능해졌으므로, active-only 슬러그 제약 자체가 무의미해졌다(카탈로그가 registry를 거울하지, native의 로그인 상태를 보지 않는다). 정본 레시피는 [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md) §5a.
 4. `ai-litellm sync`로 파생 설정(Codex 카탈로그, Codex config)을 재생성하고 proxy를 재기동한다.
 5. 확인 명령으로 실제 route, 한도, context budget 층위를 검증한다.
 
@@ -565,7 +564,14 @@ ai-litellm proxy doctor
 
 ## Codex Model Catalog
 
-`__FABRIC_HOME__/state/codex-litellm/model-catalog.json`은 `codex-litellm` 전용 compatibility shim이다. native `~/.codex` catalog가 아니다. Codex surface model name은 유지하되, OpenRouter/local backend가 거부할 수 있는 Codex 전용 tool capability를 낮춰 둔다. OpenRouter-backed 슬러그의 `context_window`/`max_context_window`는 `litellm_config.yaml`의 `model_info`(단일 출처)와 Codex harness `adapterConfig.outputReservation`에서 파생되는 safe input window다. 예를 들어 Kimi 기반 `gpt-5.4`는 raw provider top-provider window `262142`가 아니라 `262142 - 32000 - 8192 = 221950`로 생성된다. Local runtime 슬러그는 이미 LiteLLM policy cap이 runtime observed cap보다 낮으므로 catalog에서 추가로 줄이지 않는다. `auto_compact_token_limit`은 null로 재설정되어 교정된 window에서 compaction이 다시 계산된다.
+`__FABRIC_HOME__/state/codex-litellm/model-catalog.json`은 `codex-litellm` 전용 compatibility shim이다. native `~/.codex` catalog가 아니다. **원칙(2026-07-04부터): 이 카탈로그는 registry의 거울이다.** Codex surface model name은 이제 실제 LiteLLM `model_name` 그 자체이고(gpt-* 위장 슬러그는 없다), OpenRouter/local backend가 거부할 수 있는 Codex 전용 tool capability만 낮춰 둔다(`apply_patch_tool_type`/`web_search_tool_type` 삭제, `supports_search_tool: false`).
+
+생성기(`codex-litellm-refresh-catalog`)는 `codex debug models --bundled`로 번들 베이스라인을 계속 가져오지만, 그 역할은 두 가지로 축소됐다:
+
+1. **스키마 템플릿**: descriptor의 `models.catalogBaseSlug`(현재 `gpt-5.4-mini`)가 가리키는 번들 엔트리 하나를 모양(shape) 소스로 삼아, `models.catalogEntries`의 각 실명 엔트리를 그 모양대로 clone해 append한다.
+2. **보존 규칙**: 번들 엔트리는 registry `model_list`에 이름이 일치하는 route가 있어야만 생존한다 — gpt-* 슬러그는 전부 매칭 route가 없어 탈락하고, `codex-auto-review`(Codex `review` subcommand가 하드코딩 요청하는 hidden bundled slug)는 route가 있어 그대로 생존한다. 이로써 "카탈로그에 있는데 proxy가 모르는 유령 모델"이 구조적으로 불가능해진다.
+
+OpenRouter-backed 슬러그의 `context_window`/`max_context_window`는 여전히 `litellm_config.yaml`의 `model_info`(단일 출처)와 Codex harness `adapterConfig.outputReservation`에서 파생되는 safe input window다 — 파생 공식 자체는 facade 시절과 동일하고, 이름만 실명으로 바뀌었다. 예를 들어 Kimi 기반 `Kimi-K2.7-Code-openrouter`(및 같은 앵커를 공유하는 `codex-auto-review`)는 raw provider top-provider window `262144`가 아니라, 이 모델의 output cap(`16384`)이 기본 reservation(`32000`)보다 작아 reservation이 `16384`로 클램프되고 `262144 - 16384 - 8192 = 237568`로 생성된다. `GLM-5.2-openrouter`/`Mimo-V2.5-openrouter`는 `1048576 - 32000 - 8192 = 1008384`. Local runtime 슬러그는 이미 LiteLLM policy cap이 runtime observed cap보다 낮으므로 catalog에서 추가로 줄이지 않는다. `auto_compact_token_limit`은 null로 재설정되어 교정된 window에서 compaction이 다시 계산된다.
 
 이 파일은 route의 source of truth가 아니다. Codex CLI 업데이트 뒤, 또는 토큰 한도 변경 뒤 재생성한다.
 
@@ -575,7 +581,7 @@ ai-litellm sync                  # catalog + config + proxy까지 한 번에 반
 codex-litellm --list
 ```
 
-local Codex catalog entry는 `__FABRIC_HOME__/config/ai-litellm/harnesses/codex.json`의 `models.localCatalogEntries`에서 파생된다. refresh logic은 descriptor를 읽어 generated catalog에 local entry를 다시 붙인다.
+Codex catalog entry는 `__FABRIC_HOME__/config/ai-litellm/harnesses/codex.json`의 `models.catalogEntries`(cloud+local 모델을 함께 담는 통합 노출 목록 — 과거 `localCatalogEntries`에서 일반화됨)에서 파생된다. 현재 5엔트리: `Kimi-K2.7-Code-openrouter`/`GLM-5.2-openrouter`/`Mimo-V2.5-openrouter`/`Qwen3.6-27B-omlx`(`defaultReasoningLevel: low`)/`codex-auto-review`. refresh logic은 descriptor를 읽어 generated catalog에 각 entry를 다시 붙인다.
 
 ## 운영 체크리스트
 
@@ -666,7 +672,7 @@ openclaw-brain eval 세션의 핸드오프(4번째 로컬 모델 `Qwen3.6-35B-A3
 - **M1/M2 (모델별 사실, fabric 수정 불가)**: `Qwen3.6-35B-A3B`는 heavy harness + thinking-ON에서 off-task drift(M1), thinking-off에서도 27B보다 수치 정확도 낮음(M2). 어떤 fabric 수정도 이 단계를 없애지 못한다 — fabric은 *실행 가능*하게만 만들고, 매 신규 로컬 모델은 아래 자격검증을 통과해야 한다.
 - **검토 출처(정확히)**: 설계 fork 교차검토는 `codex-litellm`(harness=Codex CLI, 실제 모델=**DeepSeek-V4-Pro/OpenRouter**; `gpt-5.5`는 fabric의 카탈로그 facade 슬러그일 뿐 OpenAI 모델이 아님)으로 했고, 최종 diff 재검토는 **native `codex`(실제 OpenAI GPT-5.5, xhigh)** 로 별도 수행했다(둘 다 "no blockers"). 커밋 721e735 메시지의 "codex (gpt-5.5)"는 전자(DeepSeek)를 가리킨 것으로, OpenAI GPT-5.5 검증을 뜻하지 않는다 — 이 줄이 정본 정정이다.
 
-> **모델을 harness에 적용하는 실전 절차**(context/token 예산 맞추기, cloud/local 온보딩 레시피, DeepSeek/Kimi/GLM/Qwen worked example)는 [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md)가 정본이다. 아래는 그 중 로컬 모델 자격검증 단계.
+> **모델을 harness에 적용하는 실전 절차**(context/token 예산 맞추기, cloud/local 온보딩 레시피, Kimi/GLM/Mimo/Qwen worked example)는 [APPLYING_MODELS_TO_HARNESSES.md](APPLYING_MODELS_TO_HARNESSES.md)가 정본이다. 아래는 그 중 로컬 모델 자격검증 단계.
 
 ## 2026-06-19 모델 remap 결정 로그
 
@@ -683,6 +689,15 @@ openclaw-brain eval 세션의 핸드오프(4번째 로컬 모델 `Qwen3.6-35B-A3
 - **CLI usability(audit)**: H4 usage label을 실제 verb에 맞추고 reasoning-effort enum을 명령 행이 아닌 참조 문단으로 강등. H5 `ai-litellm doctor`를 전체 배터리 정본 그룹으로 통합(`--proxy/--context/--reasoning/--policy/--runtime` scoping, 기존 함수에 위임). H6 route probing을 `route probe`로 단일화(`route check` 흡수, `model probe` deprecated). M21 `model info`가 GET `/model/info` 전체 블록 출력. M23 agent-to-agent scratchpad 2개 삭제(durable 내용은 observations/RATIONALE/본 가이드에 보존). 모든 deprecated 형태는 경고 후 위임.
 - **check/CI hardening**: check.zsh의 jq stdin-hang을 `exec </dev/null`로 고쳤다. dash 테스트는 venv+textual 존재 시에만 check.zsh에서 돌고(없으면 skip), install.zsh의 dash-venv 빌드는 `AI_LITELLM_SKIP_DASH_VENV`로 게이트(check가 offline 유지 위해 set). CI에 `dash-tests` job 추가(textual 프로비저닝 후 `fabric_dash/tests` 실행)로 대시보드 회귀가 CI를 조용히 통과하지 못하게 했다. check.zsh의 model-mapping assertion을 remap에 맞춰 갱신하고 budget differential test를 연결했다.
 
+## 2026-07-04 라인업/실명화 결정 로그
+
+- **claude tier 라인업 교체**: `fable`=Kimi-K2.7-Code, `opus`=GLM-5.2(유지), `sonnet`=Mimo-V2.5, `haiku`=Qwen3.6-27B-omlx(local, 유지)로 교체했다(`config/claude-litellm/settings.json`이 정본). 퇴역: `DeepSeek-V4-Pro-openrouter`(opus 이탈), `Kimi-K2.6-openrouter`(K2.7-Code로 대체), `Gemma4-12B-omlx` 영구 엔트리(haiku가 Qwen으로 이동; oMLX가 계속 서빙하면 discovered route로 자동 재등장하므로 손실 없음) + 대응 `x-limits` 앵커. direct `haiku`는 로컬 불가라 `xiaomi/mimo-v2.5`로 폴백하고, `subagentModel`(direct 전용 품질 핀)은 opus 동행 원칙에 따라 `z-ai/glm-5.2`로 갱신했다.
+- **Codex gpt-* facade 제거**: `gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`/`gpt-5.2`/`gpt-5.3-codex` 라우트 5개를 삭제했다. `codex-auto-review`(Codex `review` subcommand가 하드코딩 요청하는 hidden bundled 슬러그, 번들 카탈로그 `visibility: "hide"` 확인, codex 0.142.5)만 유지하되 백엔드를 `moonshotai/kimi-k2.7-code`로 재지정했다(코드 리뷰 용도에 code-특화 모델이 맞다는 판단). `ai-litellm codex facade get|set` 명령 그룹은 은퇴시켰다 — facade 개념 자체가 없어졌으므로 위장 슬러그를 재지정할 명령도 무의미해졌고, Codex 모델 선택은 이제 실명 `model_name`(alias 경유 포함)으로만 이뤄진다.
+- **생성 카탈로그 = registry 거울**: `codex-litellm-refresh-catalog` 생성기를 재설계했다. `codex debug models --bundled` fetch는 유지하되 역할을 (1) 스키마 템플릿(`models.catalogBaseSlug`, 현재 `gpt-5.4-mini`) 소스와 (2) 보존 규칙(번들 엔트리는 registry에 매칭 라우트가 있어야만 생존 — gpt-*는 전원 탈락, `codex-auto-review`는 라우트가 있어 생존)으로 축소했다. `codex.json`의 `models.localCatalogEntries`는 클라우드+로컬 통합 노출 목록인 `models.catalogEntries`로 일반화했다(5엔트리: `Kimi-K2.7-Code-openrouter`/`GLM-5.2-openrouter`/`Mimo-V2.5-openrouter`/`Qwen3.6-27B-omlx`(defaultReasoningLevel low)/`codex-auto-review`). "카탈로그에 있는데 proxy가 모르는 유령 모델"이 구조적으로 불가능해졌다.
+- **glm52 앵커 reconcile**: OpenRouter 정본이 GLM-5.2의 `max_completion_tokens`를 131072에서 128000으로 낮췄음을 확인해 앵커를 `128000`으로 반영했다(provider-confidence 유지, `refresh-capabilities` 경로). `GLM-5.2-openrouter`를 참조하는 모든 surface(Claude opus tier, Codex 기본 모델)가 한 번에 갱신됐다.
+- **신규 앵커**: `kimi_k27_code`(262144/16384, provider) — 출력캡이 예약 정책 기본값(32000)보다 작아 예약이 capability로 클램프되는 케이스(reservation=min(32000,16384)=16384, effective_input=262144-16384-8192=**237568**). `mimo_v25`(1048576/131072, output owned-policy — GLM 선례를 이어받아 OpenRouter 미공개 시 보수 ceiling). `qwen36_27b_local`은 기존 haiku 앵커 그대로 유지(승격 엔트리 변경 없음).
+- **T0b 스파이크 근거**: real-name codex 엔트리 배선 전 실시한 스파이크(T0)는 1차로 NO-GO였으나, 원인은 codex-core가 아니라 wrapper 자신의 resolver(같은 backend를 공유하면 실명을 gpt-* 짝으로 되돌려쓰는 facade-preference 로직)였다. facade 짝이 없는 로컬 백엔드(당시 `Qwen3.6-27B-omlx`)로 resolver를 우회해 재실증(T0b)한 결과, codex-core는 실명 슬러그를 검증 없이 그대로 받아 end-to-end 응답(`LOCAL_OK`)했다 — **codex-core가 커스텀(비-gpt-*) 슬러그를 거부하지 않는다는 것이 실증됐다.** 이 결과가 실명 이전의 기술적 go 근거였다(review 의존 여부는 불명으로 남아 `codex-auto-review`를 안전측 기본으로 유지).
+
 ## Per-Model 자격검증 프로토콜 (신규 로컬 모델마다 실행)
 
 모델 `M`(oMLX 서빙명), 라우트 `R`(surface model_name), 목표: harness에서 쓸 수 있는가? thinking on/off? 정확도 등급? 재사용 probe — TRIV `"What is 7 times 6? Reply with only the number."`→`42`; DOMAIN(예시) `"A common-source stage uses a 50um/0.5um NMOS at I_D=1mA with a 2kohm load. Total input-referred thermal noise voltage over a 100MHz bandwidth? unCox=134uA/V^2, gamma=2/3, T=300K. End with the number in microvolts."`→`~15.6`.
@@ -696,6 +711,6 @@ openclaw-brain eval 세션의 핸드오프(4번째 로컬 모델 `Qwen3.6-35B-A3
 
 ## 장기 관리 원칙
 
-모델 실험은 LiteLLM registry에서 자유롭게 한다. Claude/Codex가 바라보는 facade와 shortcut은 작고 안정적으로 유지한다.
+모델 실험은 LiteLLM registry에서 자유롭게 한다. Claude/Codex가 바라보는 tier·alias·catalogEntries는 작고 안정적으로 유지한다.
 
 문서에는 모델 매핑 표를 반복하지 않는다. 매핑을 바꾼 뒤에는 설정 파일과 확인 명령의 출력만 신뢰한다.
