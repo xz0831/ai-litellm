@@ -29,7 +29,7 @@ python3 -m py_compile "$repo_root/scripts/verify_budget_consistency.py"
 # Differential test: the four token-budget implementations (Node + 2 Ruby copies
 # in lib.zsh, Python in output_clamp.py) must agree on every comparable quantity
 # across the full input matrix. This is the real drift guard for the budget math;
-# the legacy 1008384/221950/3277 single-point pins below remain as cheap smoke.
+# the legacy 1008384/237568/3277 single-point pins below remain as cheap smoke.
 # Runs from the checkout so it slices the *live* lib.zsh (self-syncing, no copy).
 # Non-interactive (no stdin/env prompts); exits nonzero on any cross-impl drift.
 python3 "$repo_root/scripts/verify_budget_consistency.py"
@@ -84,11 +84,11 @@ source "$prefix/config/ai-litellm/lib.zsh"
 grep -q "^LITELLM_MASTER_KEY=" "$prefix/state/ai-litellm/env"
 test "$(stat -f %Lp "$prefix/state/ai-litellm/env")" = "600"
 test -n "$(ai_litellm_master_key)"
-test "$(ai_litellm_model_resolve openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
-test "$(ai_litellm_model_resolve deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
-test "$(ai_litellm_model_backend openrouter/deepseek/deepseek-v4-pro)" = "openrouter/deepseek/deepseek-v4-pro"
-ai_litellm_model_limits openrouter/moonshotai/kimi-k2.6 >/dev/null
-test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/deepseek/deepseek-v4-pro)" = "none minimal low medium high xhigh"
+test "$(ai_litellm_model_resolve openrouter/moonshotai/kimi-k2.7-code)" = "Kimi-K2.7-Code-openrouter"
+test "$(ai_litellm_model_resolve xiaomi/mimo-v2.5)" = "Mimo-V2.5-openrouter"
+test "$(ai_litellm_model_backend openrouter/moonshotai/kimi-k2.7-code)" = "openrouter/moonshotai/kimi-k2.7-code"
+ai_litellm_model_limits openrouter/xiaomi/mimo-v2.5 >/dev/null
+test "$(ai_litellm_model_reasoning_allowed_efforts openrouter/z-ai/glm-5.2)" = "none minimal low medium high xhigh"
 # Un-rendered placeholder guard (run-from-checkout footgun): a literal
 # __FABRIC_HOME__ path must be refused; the rendered prefix path must pass.
 # Non-vacuous: if the guard is missing, the positive assertion below fails.
@@ -97,11 +97,11 @@ if ai_litellm_assert_rendered_path "__FABRIC_HOME__/state/codex-litellm" "test" 
   exit 1
 fi
 ai_litellm_assert_rendered_path "$prefix/state/codex-litellm" "test"
-runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown local-omlx-gemma4-12b)"
+runtime_routes_dry="$(ai_litellm_runtime_routes_write omlx 1 MarkItDown Qwen3.6-27B-4bit)"
 [[ "$runtime_routes_dry" == *"MarkItDown-omlx -> openai/MarkItDown"* ]]
-# Gemma4-12B-omlx registry entry serves openai/local-omlx-gemma4-12b, so the
+# Qwen3.6-27B-omlx registry entry serves openai/Qwen3.6-27B-4bit, so the
 # discovered route for it must be deduped (absent from the dry output).
-[[ "$runtime_routes_dry" != *"local-omlx-gemma4-12b-omlx"* ]]
+[[ "$runtime_routes_dry" != *"Qwen3.6-27B-4bit-omlx"* ]]
 # Robustness: a runtime that is reachable but whose /v1/models returns an
 # UNPARSEABLE body must NOT silently wipe existing discovered routes — discovery
 # failure (rc!=0) is distinct from a genuine empty model list and must skip the
@@ -227,43 +227,15 @@ a_json="$("$HOME/.local/bin/ai-litellm" harness alias get claude --json 2>/dev/n
 print -r -- "$a_json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);if(!Array.isArray(a)||a.length!==4||!(\"tier\" in a[0])||!(\"model\" in a[0])){console.error(\"bad alias get shape\");process.exit(1)}})" \
   || { echo "FAIL: harness alias get --json"; exit 1; }
 orig="$("$HOME/.local/bin/ai-litellm" harness alias get claude --json | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const e=a.find(x=>x.tier===\"fable\");process.stdout.write(e?e.model:\"\")})")"
-"$HOME/.local/bin/ai-litellm" harness alias set claude fable DeepSeek-V4-Pro-openrouter >/dev/null 2>&1
+"$HOME/.local/bin/ai-litellm" harness alias set claude fable GLM-5.2-openrouter >/dev/null 2>&1
 now="$("$HOME/.local/bin/ai-litellm" harness alias get claude --json | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const e=a.find(x=>x.tier===\"fable\");process.stdout.write(e?e.model:\"\")})")"
 "$HOME/.local/bin/ai-litellm" harness alias set claude fable "$orig" >/dev/null 2>&1   # restore
-[[ "$now" == "DeepSeek-V4-Pro-openrouter" && "$orig" != "$now" ]] \
+[[ "$now" == "GLM-5.2-openrouter" && "$orig" != "$now" ]] \
   || { echo "FAIL: harness alias set round-trip"; exit 1; }
 echo "ok: harness alias get/set (claude tiers)"
-# ── codex facade get --json + set round-trip (anchor-preserving) ─────────────
-f_json="$("$HOME/.local/bin/ai-litellm" codex facade get --json 2>/dev/null)"
-print -r -- "$f_json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);if(!Array.isArray(a)||a.length<5||!(\"facade\" in a[0])||!(\"model\" in a[0])){console.error(\"bad codex facade get shape\");process.exit(1)}})" \
-  || { echo "FAIL: codex facade get --json"; exit 1; }
-cfg_tmp="$(mktemp)"; cp "$AI_LITELLM_CONFIG" "$cfg_tmp"
-"$HOME/.local/bin/ai-litellm" codex facade set gpt-5.5 DeepSeek-V4-Pro-openrouter >/dev/null 2>&1
-now_model="$("$HOME/.local/bin/ai-litellm" codex facade get --json | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const e=a.find(x=>x.facade===\"gpt-5.5\");process.stdout.write(e?e.model:\"\")})")"
-now_info="$("$HOME/.local/bin/ai-litellm" codex facade get --json | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const a=JSON.parse(s);const e=a.find(x=>x.facade===\"gpt-5.5\");process.stdout.write(e?e.info:\"\")})")"
-"$HOME/.local/bin/ai-litellm" codex facade set gpt-5.5 GLM-5.2-openrouter >/dev/null 2>&1
-[[ "$now_model" == *deepseek* && "$now_info" == "*deepseek_v4_pro" ]] \
-  || { echo "FAIL: codex facade set (model + anchor-alias)"; cp "$cfg_tmp" "$AI_LITELLM_CONFIG"; rm -f "$cfg_tmp"; exit 1; }
-# byte-exact round-trip on the INSTALLED config; cmp avoids the trailing-newline
-# stripping of $(...) string compares, and (unlike `git diff config/...`) targets
-# the file this check actually edits.
-cmp -s "$cfg_tmp" "$AI_LITELLM_CONFIG" \
-  || { echo "FAIL: codex facade round-trip not byte-identical"; cp "$cfg_tmp" "$AI_LITELLM_CONFIG"; rm -f "$cfg_tmp"; exit 1; }
-rm -f "$cfg_tmp"
-echo "ok: codex facade get/set (anchor-preserving round-trip)"
-# #7 (round-1 review): a source whose model_info is an inline block (no x-limits
-# anchor) must be REJECTED with the config byte-unchanged — else the facade would
-# silently lose its anchor. PlainLocal-omlx (asserted present above) is such a
-# block-model_info entry: a valid negative fixture. (No apostrophes: single-
-# quoted zsh -fc string, see the H6 note below.)
-blk_tmp="$(mktemp)"; cp "$AI_LITELLM_CONFIG" "$blk_tmp"
-if "$HOME/.local/bin/ai-litellm" codex facade set gpt-5.4 PlainLocal-omlx >/dev/null 2>&1; then
-  echo "FAIL: codex facade set accepted a block-model_info source (anchor would be lost)"; cp "$blk_tmp" "$AI_LITELLM_CONFIG"; rm -f "$blk_tmp"; exit 1
-fi
-cmp -s "$blk_tmp" "$AI_LITELLM_CONFIG" \
-  || { echo "FAIL: rejected facade set still mutated the config"; cp "$blk_tmp" "$AI_LITELLM_CONFIG"; rm -f "$blk_tmp"; exit 1; }
-rm -f "$blk_tmp"
-echo "ok: codex facade set rejects block-model_info source (anchor guard)"
+"$HOME/.local/bin/ai-litellm" harness info codex --json >/dev/null
+test "$(ai_litellm_harness_json codex models.default)" = "GLM-5.2-openrouter"
+echo "ok: codex real-name default (facade surface retired)"
 # R2 review: the dashboard pipes a newline-less secret to key set via stdin; zsh
 # read returns nonzero on EOF-without-newline, which used to abort key set and
 # store nothing. Verify the read tolerates it. Use --env-file with an isolated
@@ -371,7 +343,7 @@ ai_litellm_context_gateway_cost_guardrail_configured
 ai_litellm_context_observations_ok
 ai_litellm_model_info_anchor_refs_ok
 openrouter_models_fixture="$HOME/openrouter-models.json"
-print -r -- "{\"data\":[{\"id\":\"deepseek/deepseek-v4-pro\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":384000},\"supported_parameters\":[\"reasoning\"]},{\"id\":\"moonshotai/kimi-k2.6\",\"context_length\":262144,\"top_provider\":{\"context_length\":262142,\"max_completion_tokens\":262142},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"z-ai/glm-5.2\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":131072},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]}]}" > "$openrouter_models_fixture"
+print -r -- "{\"data\":[{\"id\":\"moonshotai/kimi-k2.7-code\",\"context_length\":262144,\"top_provider\":{\"context_length\":262144,\"max_completion_tokens\":16384},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"xiaomi/mimo-v2.5\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"z-ai/glm-5.2\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":128000},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]}]}" > "$openrouter_models_fixture"
 export AI_LITELLM_OPENROUTER_MODELS_JSON="$openrouter_models_fixture"
 ai_litellm_model_refresh_capabilities --check >/dev/null
 ai_litellm_model_policy_audit >/dev/null
@@ -418,21 +390,22 @@ PY
 ai_litellm_context_observations DeepSeek >/dev/null
 matrix_opus="$(ai_litellm_context_matrix claude-litellm)"
 print -r -- "$matrix_opus" | grep -q ">=211580"
-test "$(ai_litellm_harness_json codex models.default)" = "gpt-5.5"
-budget="$(ai_litellm_harness_output_budget claude sonnet Kimi-K2.6-openrouter)"
-test "$(print -r -- "$budget" | jq -r ".effectiveInput > 0 and .reservation < .capability")" = "true"
-codex_budget="$(ai_litellm_harness_output_budget codex gpt-5.4 gpt-5.4)"
+budget="$(ai_litellm_harness_output_budget claude sonnet Mimo-V2.5-openrouter)"
+test "$(print -r -- "$budget" | jq -r ".effectiveInput == 1008384 and .reservation < .capability")" = "true"
+fable_budget="$(ai_litellm_harness_output_budget claude fable Kimi-K2.7-Code-openrouter)"
+test "$(print -r -- "$fable_budget" | jq -r ".effectiveInput")" = "237568"
+codex_budget="$(ai_litellm_harness_output_budget codex Mimo-V2.5-openrouter Mimo-V2.5-openrouter)"
 test "$(print -r -- "$codex_budget" | jq -r ".effectiveInput")" = "1008384"
 codex_catalog_map="$(ai_litellm_codex_catalog_context_map codex)"
-test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.4\"")" = "1008384"
-test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.4-mini\"")" = "221950"
-test "$(print -r -- "$codex_catalog_map" | jq -r ".\"gpt-5.5\"")" = "1008384"
-test "$(print -r -- "$codex_catalog_map" | jq -r ".\"Gemma4-12B-omlx\"")" = "8192"
+test "$(print -r -- "$codex_catalog_map" | jq -r ".\"Mimo-V2.5-openrouter\"")" = "1008384"
+test "$(print -r -- "$codex_catalog_map" | jq -r ".\"Kimi-K2.7-Code-openrouter\"")" = "237568"
+test "$(print -r -- "$codex_catalog_map" | jq -r ".\"GLM-5.2-openrouter\"")" = "1008384"
+test "$(print -r -- "$codex_catalog_map" | jq -r ".\"Qwen3.6-27B-omlx\"")" = "131072"
 codex_catalog="$(ai_litellm_harness_json codex paths.modelCatalog)"
 mkdir -p "${codex_catalog:h}"
-print -r -- "{\"models\":[{\"slug\":\"gpt-5.4\",\"context_window\":262144}]}" > "$codex_catalog"
+print -r -- "{\"models\":[{\"slug\":\"Mimo-V2.5-openrouter\",\"context_window\":262144}]}" > "$codex_catalog"
 ! ai_litellm_doctor_limit_sync >/dev/null 2>&1
-print -r -- "{\"models\":[{\"slug\":\"gpt-5.4\",\"context_window\":1008384}]}" > "$codex_catalog"
+print -r -- "{\"models\":[{\"slug\":\"Mimo-V2.5-openrouter\",\"context_window\":1008384}]}" > "$codex_catalog"
 ai_litellm_doctor_limit_sync >/dev/null
 ai_litellm_render_claude_settings claude
 claude_settings="$(ai_litellm_harness_json claude paths.settingsArg)"
@@ -461,22 +434,22 @@ source "$prefix/config/claude-litellm/shell.zsh"
 test "$(_claude_litellm_default_mode)" = "proxy"
 test "$(_claude_litellm_direct_default_request)" = "opus"
 test "$(_claude_litellm_proxy_default_request)" = "opus"
-test "$(_claude_litellm_direct_model_for_request "")" = "deepseek/deepseek-v4-pro"
-test "$(_claude_litellm_direct_model_for_request opus)" = "deepseek/deepseek-v4-pro"
+test "$(_claude_litellm_direct_model_for_request "")" = "z-ai/glm-5.2"
+test "$(_claude_litellm_direct_model_for_request opus)" = "z-ai/glm-5.2"
 test "$(_claude_litellm_direct_model_arg_for_request opus)" = "opus"
-test "$(_claude_litellm_direct_model_arg_for_request openrouter/deepseek/deepseek-v4-pro)" = "deepseek/deepseek-v4-pro"
-test "$(_claude_litellm_direct_wire_model openrouter/moonshotai/kimi-k2.6)" = "moonshotai/kimi-k2.6"
-test "$(_claude_litellm_target_model_for_request "")" = "DeepSeek-V4-Pro-openrouter"
-test "$(_claude_litellm_target_model_for_request openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
-test "$(_claude_litellm_resolve_model_arg openrouter/deepseek/deepseek-v4-pro)" = "DeepSeek-V4-Pro-openrouter"
+test "$(_claude_litellm_direct_model_arg_for_request openrouter/z-ai/glm-5.2)" = "z-ai/glm-5.2"
+test "$(_claude_litellm_direct_wire_model openrouter/xiaomi/mimo-v2.5)" = "xiaomi/mimo-v2.5"
+test "$(_claude_litellm_target_model_for_request "")" = "GLM-5.2-openrouter"
+test "$(_claude_litellm_target_model_for_request openrouter/z-ai/glm-5.2)" = "GLM-5.2-openrouter"
+test "$(_claude_litellm_resolve_model_arg openrouter/z-ai/glm-5.2)" = "GLM-5.2-openrouter"
 (
   _claude_litellm_launch_proxy() { print -r -- "proxy:$1"; }
   _claude_litellm_launch_direct() { print -r -- "direct:$1"; }
   test "$(claude-litellm sonnet)" = "proxy:sonnet"
   test "$(claude-litellm --direct sonnet)" = "direct:sonnet"
   test "$(claude-litellm --proxy sonnet)" = "proxy:sonnet"
-  test "$(claude-litellm openrouter/deepseek/deepseek-v4-pro)" = "proxy:openrouter/deepseek/deepseek-v4-pro"
-  test "$(claude-litellm --direct openrouter/deepseek/deepseek-v4-pro)" = "direct:openrouter/deepseek/deepseek-v4-pro"
+  test "$(claude-litellm openrouter/z-ai/glm-5.2)" = "proxy:openrouter/z-ai/glm-5.2"
+  test "$(claude-litellm --direct openrouter/z-ai/glm-5.2)" = "direct:openrouter/z-ai/glm-5.2"
   # F1: an unresolvable proxy model must ERROR (non-zero, with the bad token in
   # the message) and never reach the launcher — never leak as a prompt. These
   # are non-vacuous: without the guard the stubbed launcher prints "proxy:" and
@@ -515,11 +488,11 @@ direct_output="$(PATH="$stub_dir:$PATH" OPENROUTER_API_KEY="TEST_OPENROUTER" cla
 [[ "$direct_output" == *"discovery=0"* ]]
 [[ "$direct_output" == *"attribution=0"* ]]
 [[ "$direct_output" == *"max_tokens_set=0"* ]]
-[[ "$direct_output" == *"sonnet=moonshotai/kimi-k2.6"* ]]
-[[ "$direct_output" == *"sonnet_name=Kimi-K2.6 (openrouter)"* ]]
-[[ "$direct_output" == *"haiku=z-ai/glm-5.2"* ]]
-[[ "$direct_output" == *"haiku_name=GLM-5.2 (openrouter)"* ]]
-[[ "$direct_output" == *"subagent=deepseek/deepseek-v4-pro"* ]]
+[[ "$direct_output" == *"sonnet=xiaomi/mimo-v2.5"* ]]
+[[ "$direct_output" == *"sonnet_name=Mimo-V2.5 (openrouter)"* ]]
+[[ "$direct_output" == *"haiku=xiaomi/mimo-v2.5"* ]]
+[[ "$direct_output" == *"haiku_name=Mimo-V2.5 (openrouter)"* ]]
+[[ "$direct_output" == *"subagent=z-ai/glm-5.2"* ]]
 [[ "$direct_output" == *"caps=0:"* ]]
 [[ "$direct_output" == *"--model sonnet"* ]]
 [[ "$direct_output" == *"--settings $prefix/state/claude-litellm/overlay-settings.json"* ]]
@@ -562,10 +535,10 @@ mv "$caps_settings.tmp" "$caps_settings"
   [[ "$proxy_output" == *"discovery=1"* ]]
   [[ "$proxy_output" == *"attribution=0"* ]]
   [[ "$proxy_output" == *"max_tokens_set=1"* ]]
-  [[ "$proxy_output" == *"sonnet=Kimi-K2.6-openrouter"* ]]
-  [[ "$proxy_output" == *"sonnet_name=Kimi-K2.6 (openrouter)"* ]]
-  [[ "$proxy_output" == *"haiku=Gemma4-12B-omlx"* ]]
-  [[ "$proxy_output" == *"haiku_name=Gemma4-12B (omlx)"* ]]
+  [[ "$proxy_output" == *"sonnet=Mimo-V2.5-openrouter"* ]]
+  [[ "$proxy_output" == *"sonnet_name=Mimo-V2.5 (openrouter)"* ]]
+  [[ "$proxy_output" == *"haiku=Qwen3.6-27B-omlx"* ]]
+  [[ "$proxy_output" == *"haiku_name=Qwen3.6-27B (omlx)"* ]]
   [[ "$proxy_output" == *"caps=1:"* ]]
   [[ "$proxy_output" == *"--model sonnet"* ]]
 )
@@ -574,11 +547,11 @@ runtime_routes_dedup="$(ai_litellm_runtime_routes_write omlx 1 Qwen3.6-27B-4bit)
 [[ -z "$runtime_routes_dedup" ]]  # dedup must yield NO route for an upstream a registry entry already serves
 "$HOME/.local/bin/claude-litellm" --status >/dev/null
 source "$prefix/config/codex-litellm/shell.zsh"
-test "$(_codex_litellm_resolve_model openrouter/deepseek/deepseek-v4-pro)" = "gpt-5.4"
-test "$(_codex_litellm_resolve_model DeepSeek-V4-Pro-openrouter)" = "gpt-5.4"
-test "$(_codex_litellm_resolve_model openrouter/moonshotai/kimi-k2.6)" = "gpt-5.4-mini"
-test "$(_codex_litellm_resolve_model openai/local-omlx-gemma4-12b)" = "gpt-5.3-codex"
-test "$(_codex_litellm_resolve_model Gemma4-12B-omlx)" = "gpt-5.3-codex"
+test "$(_codex_litellm_resolve_model openrouter/xiaomi/mimo-v2.5)" = "Mimo-V2.5-openrouter"
+test "$(_codex_litellm_resolve_model Mimo-V2.5-openrouter)" = "Mimo-V2.5-openrouter"
+test "$(_codex_litellm_resolve_model openrouter/moonshotai/kimi-k2.7-code)" = "Kimi-K2.7-Code-openrouter"
+test "$(_codex_litellm_resolve_model openai/Qwen3.6-27B-4bit)" = "Qwen3.6-27B-omlx"
+test "$(_codex_litellm_resolve_model Qwen3.6-27B-omlx)" = "Qwen3.6-27B-omlx"
 # Pre-flight: a codex binary that cannot start (e.g. the macOS-Tahoe dyld hang)
 # must make a session launch fail LOUD + fast, never hang. A hanging stub proves
 # the bounded probe times out and reports actionably; an instant stub passes.

@@ -1,13 +1,8 @@
 {
   "aliases": {
-    "gpt55": "gpt-5.5",
-    "gpt5.5": "gpt-5.5",
-    "codex": "gpt-5.3-codex",
-    "gpt54": "gpt-5.4",
-    "gpt5.4": "gpt-5.4",
-    "gpt52": "gpt-5.2",
-    "gpt5.2": "gpt-5.2",
-    "fast": "gpt-5.4-mini",
-    "mini": "gpt-5.4-mini"
+    "kimi": "Kimi-K2.7-Code-openrouter",
+    "glm": "GLM-5.2-openrouter",
+    "mimo": "Mimo-V2.5-openrouter",
+    "qwen": "Qwen3.6-27B-omlx"
   }
 }

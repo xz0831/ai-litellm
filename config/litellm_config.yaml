@@ -16,19 +16,9 @@
 # `ai-litellm model refresh-capabilities`. Locally capped values must be marked
 # owned-policy and documented here; do not leave guessed numbers unlabeled.
 x-limits:
-  deepseek_v4_pro: &deepseek_v4_pro
-    max_input_tokens: 1048576
-    max_output_tokens: 384000
-    supports_reasoning: true
-    x_input_confidence: provider
-    x_input_source: openrouter.top_provider.context_length
-    x_output_confidence: provider
-    x_output_source: openrouter.top_provider.max_completion_tokens
-    x_reasoning_confidence: provider
-    x_reasoning_source: openrouter.supported_parameters
-  kimi_k26: &kimi_k26
-    max_input_tokens: 262142
-    max_output_tokens: 262142
+  kimi_k27_code: &kimi_k27_code
+    max_input_tokens: 262144
+    max_output_tokens: 16384
     supports_reasoning: true
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
@@ -38,24 +28,24 @@ x-limits:
     x_reasoning_source: openrouter.supported_parameters
   glm52: &glm52
     max_input_tokens: 1048576
-    max_output_tokens: 131072
+    max_output_tokens: 128000
     supports_reasoning: true
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
     x_output_confidence: provider
-    x_output_source: openrouter.top_provider.max_completion_tokens
+    x_output_source: openrouter.top_provider.max_completion_tokens; reconciled 2026-07-04 (provider lowered 131072->128000)
     x_reasoning_confidence: provider
     x_reasoning_source: openrouter.supported_parameters
-  gemma_local: &gemma_local
-    max_input_tokens: 8192
-    max_output_tokens: 4096
-    supports_reasoning: false
-    x_input_confidence: owned-policy
-    x_input_source: quality-conservative-local-policy; omlx-runtime-advertises-131072
+  mimo_v25: &mimo_v25
+    max_input_tokens: 1048576
+    max_output_tokens: 131072
+    supports_reasoning: true
+    x_input_confidence: provider
+    x_input_source: openrouter.top_provider.context_length
     x_output_confidence: owned-policy
-    x_output_source: quality-conservative-local-policy
-    x_reasoning_confidence: owned-policy
-    x_reasoning_source: local-runtime-no-reasoning-routing
+    x_output_source: openrouter-unpublished; conservative ceiling mirroring glm52 precedent
+    x_reasoning_confidence: provider
+    x_reasoning_source: openrouter.supported_parameters
   qwen36_27b_local: &qwen36_27b_local
     max_input_tokens: 131072
     max_output_tokens: 16384
@@ -70,19 +60,20 @@ x-limits:
 model_list:
   # Raw provider-facing names (<Model>-<provider lowercase>). Useful for ad-hoc
   # direct testing; the real backend is always visible in litellm_params.model.
-  # Codex deliberately does the OPPOSITE below (bundled-slug facades) because
-  # Codex validates models against its own catalog -- see the 2026-06-12 log.
-  - model_name: DeepSeek-V4-Pro-openrouter
+  # Codex now shares these same real names directly (gpt-* bundled-slug facades
+  # retired 2026-07-04); codex-auto-review below is the one exception -- a
+  # hidden bundled-catalog slug Codex's `review` subcommand hardcodes.
+  - model_name: Kimi-K2.7-Code-openrouter
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/moonshotai/kimi-k2.7-code
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *deepseek_v4_pro
+    model_info: *kimi_k27_code
 
-  - model_name: Kimi-K2.6-openrouter
+  - model_name: Mimo-V2.5-openrouter
     litellm_params:
-      model: openrouter/moonshotai/kimi-k2.6
+      model: openrouter/xiaomi/mimo-v2.5
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *kimi_k26
+    model_info: *mimo_v25
 
   - model_name: GLM-5.2-openrouter
     litellm_params:
@@ -90,59 +81,15 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY
     model_info: *glm52
 
-  # Codex-native facade names. Keep these aligned with Codex's /model UI.
-  - model_name: gpt-5.5
-    litellm_params:
-      model: openrouter/z-ai/glm-5.2
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *glm52
-
-  - model_name: gpt-5.4
-    litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *deepseek_v4_pro
-
-  - model_name: gpt-5.4-mini
-    litellm_params:
-      model: openrouter/moonshotai/kimi-k2.6
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *kimi_k26
-
-  # gpt-5.2: a --bundled codex catalog slug; codex-litellm offers every bundled
-  # slug, so it needs a route. Mirrors gpt-5.5 -> GLM-5.2.
-  - model_name: gpt-5.2
-    litellm_params:
-      model: openrouter/z-ai/glm-5.2
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *glm52
-
-  # Codex local-backed facade: the --bundled slug gpt-5.3-codex routes to the
-  # local oMLX gemma. Local route (api_key: none) -> exempt from codex catalog
-  # window reduction; haiku-grade conservative caps via the gemma anchor.
-  # (Native codex's active catalog renames this gpt-5.3-codex-spark, but the
-  # isolated, logged-out codex-litellm only sees the --bundled gpt-5.3-codex.)
-  - model_name: gpt-5.3-codex
-    litellm_params:
-      model: openai/local-omlx-gemma4-12b
-      api_base: http://127.0.0.1:8000/v1
-      api_key: none
-    model_info: *gemma_local
-
+  # codex-auto-review: hidden bundled-catalog slug (visibility: "hide", codex
+  # 0.142.5) that Codex's `review` subcommand hardcodes a request for -- kept
+  # and repointed to a code-specialized backend (kimi-k2.7-code) for the
+  # code-review use case; not a user-facing model-picker facade.
   - model_name: codex-auto-review
     litellm_params:
-      model: openrouter/deepseek/deepseek-v4-pro
+      model: openrouter/moonshotai/kimi-k2.7-code
       api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *deepseek_v4_pro
-
-  # Sample local runtime-facing route. Runtime lifecycle and machine-specific
-  # discovered local routes are managed by ai-litellm metadata/sync.
-  - model_name: Gemma4-12B-omlx
-    litellm_params:
-      model: openai/local-omlx-gemma4-12b
-      api_base: http://127.0.0.1:8000/v1
-      api_key: none
-    model_info: *gemma_local
+    model_info: *kimi_k27_code
 
   # Claude haiku-tier local model: first-class registry entry (not a discovered
   # route) so the tier survives reinstall/discovery and is anchor-checked.
@@ -173,36 +120,6 @@ model_list:
 
 # BEGIN ai-litellm discovered local routes
 # Managed by `ai-litellm sync`; generated from runtimes.omlx /v1/models.
-  - model_name: Qwen3.6-Test-27B-omlx
-    litellm_params:
-      model: openai/Qwen3.6-Test-27B
-      api_base: http://127.0.0.1:8000/v1
-      api_key: none
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 16384
-      supports_reasoning: false
-      x_input_confidence: owned-policy
-      x_input_source: native 262144 (model config.json); owned-policy local throughput cap
-      x_output_confidence: owned-policy
-      x_output_source: owned-policy local output cap
-      x_reasoning_confidence: owned-policy
-      x_reasoning_source: local-runtime-no-reasoning-routing
-  - model_name: PlainLocal-omlx
-    litellm_params:
-      model: openai/PlainLocal
-      api_base: http://127.0.0.1:8000/v1
-      api_key: none
-    model_info:
-      max_input_tokens: 8192
-      max_output_tokens: 4096
-      supports_reasoning: false
-      x_input_confidence: owned-policy
-      x_input_source: quality-conservative-local-policy; runtime-specific
-      x_output_confidence: owned-policy
-      x_output_source: quality-conservative-local-policy
-      x_reasoning_confidence: owned-policy
-      x_reasoning_source: local-runtime-no-reasoning-routing
 # END ai-litellm discovered local routes
 
 general_settings:

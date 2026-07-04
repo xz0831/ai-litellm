@@ -56,16 +56,14 @@
     "supportsWebsockets": false
   },
   "models": {
-    "default": "gpt-5.5",
+    "default": "GLM-5.2-openrouter",
     "catalogBaseSlug": "gpt-5.4-mini",
-    "localCatalogEntries": [
-      {
-        "slug": "Gemma4-12B-omlx",
-        "displayName": "Gemma 4 12B (omlx)",
-        "description": "Local Gemma 4 12B 4-bit served by oMLX through LiteLLM.",
-        "priority": 90,
-        "defaultReasoningLevel": "low"
-      }
+    "catalogEntries": [
+      { "slug": "Kimi-K2.7-Code-openrouter", "displayName": "Kimi-K2.7-Code (openrouter)", "description": "MoonshotAI Kimi K2.7 Code via OpenRouter through LiteLLM.", "priority": 96 },
+      { "slug": "GLM-5.2-openrouter", "displayName": "GLM-5.2 (openrouter)", "description": "Z.ai GLM 5.2 via OpenRouter through LiteLLM.", "priority": 95 },
+      { "slug": "Mimo-V2.5-openrouter", "displayName": "Mimo-V2.5 (openrouter)", "description": "Xiaomi MiMo V2.5 via OpenRouter through LiteLLM.", "priority": 94 },
+      { "slug": "Qwen3.6-27B-omlx", "displayName": "Qwen3.6-27B (omlx)", "description": "Local Qwen3.6 27B 4-bit served by oMLX through LiteLLM.", "priority": 90, "defaultReasoningLevel": "low" },
+      { "slug": "codex-auto-review", "displayName": "Codex Auto Review", "description": "Hidden review-model route (Kimi-K2.7-Code backend).", "priority": 29 }
     ]
   },
   "adapterConfig": {
@@ -104,9 +102,6 @@
     },
     "projectTrust": {
       "__HOME__": "untrusted"
-    },
-    "availabilityNux": {
-      "gpt-5.5": 4
     },
     "subcommands": [
       "exec",

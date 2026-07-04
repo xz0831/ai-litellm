@@ -4,28 +4,28 @@
   "directDefault": "opus",
   "proxyDefault": "opus",
   "directAliases": {
-    "fable": "z-ai/glm-5.2",
-    "opus": "deepseek/deepseek-v4-pro",
-    "sonnet": "moonshotai/kimi-k2.6",
-    "haiku": "z-ai/glm-5.2"
+    "fable": "moonshotai/kimi-k2.7-code",
+    "opus": "z-ai/glm-5.2",
+    "sonnet": "xiaomi/mimo-v2.5",
+    "haiku": "xiaomi/mimo-v2.5"
   },
   "directDisplayNames": {
-    "fable": "GLM-5.2 (openrouter)",
-    "opus": "DeepSeek-V4-Pro (openrouter)",
-    "sonnet": "Kimi-K2.6 (openrouter)",
-    "haiku": "GLM-5.2 (openrouter)"
+    "fable": "Kimi-K2.7-Code (openrouter)",
+    "opus": "GLM-5.2 (openrouter)",
+    "sonnet": "Mimo-V2.5 (openrouter)",
+    "haiku": "Mimo-V2.5 (openrouter)"
   },
-  "subagentModel": "deepseek/deepseek-v4-pro",
+  "subagentModel": "z-ai/glm-5.2",
   "aliases": {
-    "fable": "GLM-5.2-openrouter",
-    "opus": "DeepSeek-V4-Pro-openrouter",
-    "sonnet": "Kimi-K2.6-openrouter",
-    "haiku": "Gemma4-12B-omlx"
+    "fable": "Kimi-K2.7-Code-openrouter",
+    "opus": "GLM-5.2-openrouter",
+    "sonnet": "Mimo-V2.5-openrouter",
+    "haiku": "Qwen3.6-27B-omlx"
   },
   "displayNames": {
-    "fable": "GLM-5.2 (openrouter)",
-    "opus": "DeepSeek-V4-Pro (openrouter)",
-    "sonnet": "Kimi-K2.6 (openrouter)",
-    "haiku": "Gemma4-12B (omlx)"
+    "fable": "Kimi-K2.7-Code (openrouter)",
+    "opus": "GLM-5.2 (openrouter)",
+    "sonnet": "Mimo-V2.5 (openrouter)",
+    "haiku": "Qwen3.6-27B (omlx)"
   }
 }

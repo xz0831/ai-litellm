@@ -50,7 +50,13 @@ codex_slug = ->(name) { name.to_s.match?(/\A(?:gpt-|codex-|local-)/) }
 preferred = []
 preferred << default_model
 aliases.each_value { |value| preferred << value }
-Array(descriptor.dig("models", "localCatalogEntries")).each { |entry| preferred << entry["slug"] }
+# When a raw backend id resolves to several registry model_names sharing the
+# same backend (e.g. codex-auto-review and Kimi-K2.7-Code-openrouter both
+# route to the Kimi backend), prefer the catalogEntries slugs from the descriptor.
+# Pre-real-name-transition this was "prefer the codex-safe gpt-*/codex-*/
+# local-* facade slug"; facades are gone, so the rule now reduces to "prefer
+# the registry model_name that is also a user-facing catalog entry".
+Array(descriptor.dig("models", "catalogEntries")).each { |entry| preferred << entry["slug"] }
 preferred = preferred.compact.uniq
 
 pick = lambda do |matches|
@@ -277,33 +283,23 @@ codex-litellm-refresh-catalog() {
   descriptor="$(ai_litellm_harness_descriptor "$CODEX_LITELLM_HARNESS")" || return 1
   local codex_command
   codex_command="$(ai_litellm_harness_json "$CODEX_LITELLM_HARNESS" command 2>/dev/null || printf 'codex')"
-  local local_catalog_json
-  local_catalog_json="$(ai_litellm_ruby -ryaml -rjson -e '
+  local catalog_merge_json
+  catalog_merge_json="$(ai_litellm_ruby -ryaml -rjson -e '
 registry = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
 descriptor = JSON.parse(File.read(ARGV[1]))
-configured = Array(descriptor.dig("models", "localCatalogEntries"))
-entries = []
-seen = {}
-configured.each do |entry|
-  next unless entry["slug"]
-  entries << entry
-  seen[entry["slug"]] = true
-end
-Array(registry["model_list"]).each do |entry|
-  slug = entry["model_name"].to_s
-  next unless slug.start_with?("local-")
-  next if seen[slug]
-  backend = entry.dig("litellm_params", "model").to_s.sub(%r{\Aopenai/}, "")
-  entries << {
-    "slug" => slug,
-    "displayName" => slug,
-    "description" => "Local model #{backend} served through LiteLLM.",
-    "priority" => 80,
-    "defaultReasoningLevel" => "low"
-  }
-  seen[slug] = true
-end
-puts JSON.generate(entries)
+configured = Array(descriptor.dig("models", "catalogEntries"))
+entries = configured.map do |entry|
+  next nil unless entry["slug"]
+  out = entry.dup
+  if out["displayName"].to_s.empty?
+    slug = out["slug"].to_s
+    idx = slug.rindex("-")
+    out["displayName"] = idx ? "#{slug[0...idx]} (#{slug[(idx + 1)..-1].downcase})" : slug
+  end
+  out
+end.compact
+routes = Array(registry["model_list"]).map { |entry| entry["model_name"].to_s }.reject(&:empty?).uniq
+puts JSON.generate({"entries" => entries, "routes" => routes})
 ' "$AI_LITELLM_CONFIG" "$descriptor")" || return 1
 
   # Codex has no reliable request-body output cap, so catalog context windows
@@ -317,8 +313,14 @@ puts JSON.generate(entries)
   # truth for the isolated codex-litellm: the ACTIVE catalog (gpt-5.3-codex-spark
   # etc.) is network/login-fetched into native ~/.codex only — an isolated,
   # logged-out CODEX_HOME cannot retrieve it (a `codex debug models` there just
-  # reads back this generated file, circularly). So facade slugs must come from
-  # --bundled, and litellm routes must cover exactly those --bundled slugs.
+  # reads back this generated file, circularly). The bundled fetch now serves
+  # two narrower purposes: (1) a schema TEMPLATE (catalogBaseSlug, e.g.
+  # gpt-5.4-mini) whose shape every real-name catalogEntries append clones,
+  # and (2) a RETENTION check -- a bundled slug survives only if the registry
+  # still has a matching route (gpt-* facades have none and drop out;
+  # codex-auto-review is a hidden slug the Codex `review` subcommand hardcodes
+  # and does have a route, so it survives as-is). This makes "a model the
+  # catalog advertises but the proxy does not know" structurally impossible.
   # `codex debug models` is an external binary that can hang (auth/network/GUI
   # subprocess). Bound it so a stuck codex never hangs the whole sync — on
   # timeout the pipe fails and the existing catalog is kept (see the || below).
@@ -327,7 +329,9 @@ puts JSON.generate(entries)
 const fs = require("fs");
 const descriptor = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const catalogContext = JSON.parse(process.argv[2] || "{}");
-const entries = JSON.parse(process.argv[3] || "[]");
+const merged = JSON.parse(process.argv[3] || "{}");
+const entries = Array.isArray(merged.entries) ? merged.entries : [];
+const routes = new Set(Array.isArray(merged.routes) ? merged.routes : []);
 const catalog = JSON.parse(fs.readFileSync(0, "utf8"));
 catalog.models = (catalog.models || []).map((model) => {
   const next = {...model, supports_search_tool: false};
@@ -335,15 +339,21 @@ catalog.models = (catalog.models || []).map((model) => {
   delete next.web_search_tool_type;
   return next;
 });
-const localSlugs = new Set(entries.map((entry) => entry.slug));
-catalog.models = catalog.models.filter((model) => !localSlugs.has(model.slug));
 const baseSlug = descriptor.models?.catalogBaseSlug || "gpt-5.4-mini";
 const base = catalog.models.find((model) => model.slug === baseSlug) || catalog.models[0];
 if (!base && entries.length) {
   console.error("No base Codex catalog model found");
   process.exit(1);
 }
+// Retention rule: a bundled model survives only if the registry has a route
+// for its slug (gpt-* facades drop out here; codex-auto-review, a hidden slug
+// the `review` subcommand hardcodes, keeps its bundled shape/visibility as-is).
+catalog.models = catalog.models.filter((model) => routes.has(model.slug));
+const existingSlugs = new Set(catalog.models.map((model) => model.slug));
 for (const entry of entries) {
+  // A retained bundled survivor wins over its own catalogEntries copy (e.g.
+  // codex-auto-review is already present with its real bundled fields).
+  if (existingSlugs.has(entry.slug)) continue;
   catalog.models.push({
     ...base,
     slug: entry.slug,
@@ -357,6 +367,7 @@ for (const entry of entries) {
     upgrade: null,
     supports_search_tool: false
   });
+  existingSlugs.add(entry.slug);
 }
 // Stamp the safe input window per slug from the single source plus Codex
 // reservation policy. Reset auto_compact_token_limit to null so Codex derives
@@ -367,7 +378,7 @@ catalog.models = catalog.models.map((model) => {
   return { ...model, context_window: ctx, max_context_window: ctx, auto_compact_token_limit: null };
 });
 process.stdout.write(JSON.stringify(catalog, null, 2) + "\n");
-	' "$descriptor" "$catalog_context_json" "$local_catalog_json" > "$tmp" || {
+' "$descriptor" "$catalog_context_json" "$catalog_merge_json" > "$tmp" || {
       rm -f "$tmp"
       echo "codex catalog refresh failed: 'codex debug models' errored or timed out (>${AI_LITELLM_CODEX_PROBE_TIMEOUT:-30}s); existing catalog kept." >&2
       return 1

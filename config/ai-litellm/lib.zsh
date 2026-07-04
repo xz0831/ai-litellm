@@ -1104,18 +1104,6 @@ ai_litellm_cli_arg_present() {
   return 1
 }
 
-ai_litellm_harness_is_subcommand() {
-  local harness="$1"
-  local candidate="$2"
-  [[ -n "$candidate" ]] || return 1
-  ai_litellm_harness_json_array "$harness" adapterConfig.subcommands 2>/dev/null | grep -Fx -- "$candidate" >/dev/null
-}
-
-ai_litellm_harness_default_model() {
-  local harness="$1"
-  ai_litellm_harness_json "$harness" models.default 2>/dev/null || return 1
-}
-
 ai_litellm_harnesses() {
   local harness
   echo "ai-litellm harnesses"
@@ -4034,7 +4022,7 @@ descriptor_paths(harness_dir).each do |path|
     selections << ["default(#{default})", default] if default
     settings = read_json(descriptor.dig("paths", "settings"))
     Array((settings["aliases"] || {}).values).uniq.each { |model| selections << [model, model] }
-    Array(descriptor.dig("models", "localCatalogEntries")).each do |entry|
+    Array(descriptor.dig("models", "catalogEntries")).each do |entry|
       selections << [entry["slug"], entry["slug"]] if entry["slug"]
     end
     registry.keys.grep(/^codex-/).each { |model| selections << [model, model] }
@@ -4565,7 +4553,7 @@ def descriptor_selections(descriptor, registry)
     Array(aliases.values).uniq.each do |model|
       rows << [model, model] if model
     end
-    Array(models["localCatalogEntries"]).each do |entry|
+    Array(models["catalogEntries"]).each do |entry|
       model = entry["slug"]
       rows << [model, model] if model
     end
@@ -5231,54 +5219,6 @@ end
 ' "$AI_LITELLM_CONFIG"
 }
 
-ai_litellm_context_claude_reservations_ok() {
-  ai_litellm_harness_descriptor claude >/dev/null 2>&1 || return 0
-  [[ "$(ai_litellm_harness_json claude adapter 2>/dev/null || true)" == "claude-code" ]] || return 0
-  ai_litellm_harness_json claude adapterConfig.outputReservation.default >/dev/null 2>&1 || {
-    echo "Claude descriptor is missing adapterConfig.outputReservation.default" >&2
-    return 1
-  }
-
-  local settings
-  settings="$(ai_litellm_harness_json claude paths.settings 2>/dev/null)" || return 1
-
-  local failed=0 tier model budget reservation effective minimum context capability headroom
-  for tier in "${(@f)$(ai_litellm_harness_json_array claude models.tiers 2>/dev/null)}"; do
-    [[ -n "$tier" ]] || continue
-    model="$(ai_litellm_json_file "$settings" "aliases.$tier" 2>/dev/null || true)"
-    if [[ -z "$model" ]]; then
-      echo "Claude tier has no alias: $tier" >&2
-      failed=1
-      continue
-    fi
-
-    budget="$(ai_litellm_harness_output_budget claude "$tier" "$model" 2>/dev/null || true)"
-    if [[ -z "$budget" ]]; then
-      echo "Claude tier has no output budget: $tier -> $model" >&2
-      failed=1
-      continue
-    fi
-
-    reservation="$(print -r -- "$budget" | jq -r '.reservation // 0')"
-    effective="$(print -r -- "$budget" | jq -r '.effectiveInput // 0')"
-    minimum="$(print -r -- "$budget" | jq -r '.minimumInput // 32768')"
-    context="$(print -r -- "$budget" | jq -r '.context // "-"')"
-    capability="$(print -r -- "$budget" | jq -r '.capability // "-"')"
-    headroom="$(print -r -- "$budget" | jq -r '.tokenizerHeadroom // 0')"
-
-    if (( ${reservation:-0} <= 0 )); then
-      echo "Claude tier output reservation is not positive: $tier -> $model reservation=$reservation" >&2
-      failed=1
-    fi
-    if (( ${effective:-0} < ${minimum:-32768} )); then
-      echo "Claude tier input budget below minimum: $tier -> $model context=$context capability=$capability reservation=$reservation headroom=$headroom effective_input=$effective minimum=$minimum" >&2
-      failed=1
-    fi
-  done
-
-  return $failed
-}
-
 ai_litellm_context_harness_reservations_ok() {
   [[ -d "$AI_LITELLM_HARNESSES_DIR" ]] || return 0
   ai_litellm_ruby -rjson -ryaml -e '
@@ -5314,7 +5254,7 @@ def selections(descriptor, registry)
     out << ["default", models["default"]] if models["default"]
     out << ["small", models["small"]] if models["small"]
     Array(aliases.values).uniq.each { |model| out << [model, model] if model }
-    Array(models["localCatalogEntries"]).each do |entry|
+    Array(models["catalogEntries"]).each do |entry|
       model = entry["slug"]
       out << [model, model] if model
     end
@@ -5770,13 +5710,10 @@ ai_litellm_cmd_doctor() {
 # empty/not-running instead of aborting, so the command always exits 0
 # (observability command; mirrors the empty-output honesty of the json API).
 ai_litellm_cmd_status() {
-  case "${1:-}" in
-    ""|--json) ;;
-    *)
-      echo "Usage: ai-litellm status [--json]" >&2
-      return 1
-      ;;
-  esac
+  if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != "--json" ]] }; then
+    echo "Usage: ai-litellm status [--json]" >&2
+    return 1
+  fi
   if [[ "${1:-}" == "--json" ]]; then
     node -e '
 const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
@@ -5793,7 +5730,7 @@ process.stdout.write(JSON.stringify({ proxy, harnesses, runtimes, keys, models }
   ai_litellm_cmd_harness alias get claude 2>/dev/null | node -e '
 const input = require("fs").readFileSync(0, "utf8");
 try {
-  for (const e of JSON.parse(input)) console.log("  claude " + e.tier + " -> " + e.model);
+  for (const e of JSON.parse(input)) console.log("  claude " + e.tier + " -> " + (e.model ?? "unset"));
 } catch {
   if (input) process.stdout.write(input.replace(/^/gm, "  "));
 }
@@ -5804,94 +5741,6 @@ try {
   echo
   ai_litellm_capabilities
   return 0
-}
-
-ai_litellm_codex_facade_json() {
-  ai_litellm_ruby -rjson -e '
-    facades = %w[gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.2 gpt-5.3-codex]
-    lines = File.read(ARGV[0]).lines
-    out = []
-    facades.each do |f|
-      si = lines.index { |l| l.match?(/^  - model_name:\s*#{Regexp.escape(f)}\s*$/) }
-      next unless si
-      fi = ((si+1)...lines.length).find { |i| lines[i].match?(/^  - model_name:\s*/) } || lines.length
-      body = lines[si...fi]
-      model = (body.find { |l| l =~ /^      model:\s*(\S.*)$/ } && $1)
-      info  = (body.find { |l| l =~ /^    model_info:\s*(\S.*)$/ } && $1)
-      out << {"facade" => f, "model" => model, "info" => info}
-    end
-    puts JSON.generate(out)
-  ' "$AI_LITELLM_CONFIG" 2>/dev/null || printf '[]'
-}
-
-ai_litellm_codex_facade_set() {
-  local facade="${1:-}" source="${2:-}"
-  if [[ -z "$facade" || -z "$source" ]]; then
-    echo "Usage: ai-litellm codex facade set <facade> <source_model_name>" >&2
-    return 1
-  fi
-  ai_litellm_ruby -e '
-    config_path, facade, source = ARGV
-    lines = File.read(config_path).lines
-    er = lambda do |name|
-      s = lines.index { |l| l.match?(/^  - model_name:\s*#{Regexp.escape(name)}\s*$/) }
-      next nil unless s
-      f = ((s+1)...lines.length).find { |i| lines[i].match?(/^  - model_name:\s*/) } || lines.length
-      [s, f]
-    end
-    fr = er.call(facade) or abort("Unknown codex facade: #{facade}")
-    sr = er.call(source) or abort("Unknown source model_name: #{source}")
-    # body = entry lines after the `- model_name:` line, trailing blank lines and
-    # top-level comment lines trimmed (inter-entry comments are not part of the body)
-    body = lambda do |s, f|
-      b = lines[(s+1)...f]
-      b.pop while b.any? && (b.last.strip.empty? || b.last.match?(/^\s*#/))
-      b
-    end
-    src_body = body.call(*sr)
-    # Anchor preservation: the source must reference an x-limits anchor
-    # (model_info: *name), not spell out an inline block — copying a block body
-    # would drop the facade anchor and break ai_litellm_model_info_anchor_refs_ok.
-    unless src_body.any? { |l| l =~ /^    model_info:\s*\*[A-Za-z0-9_]+\s*$/ }
-      abort("source #{source} has an inline model_info block, not an x-limits anchor; choose an anchor-backed source")
-    end
-    fs, ff = fr
-    fbody = body.call(fs, ff)
-    # Build new file: keep facade model_name line; replace body; keep one trailing blank
-    # to match the original separator, then the rest of the file after the facade entry.
-    tail = lines[(fs + 1 + fbody.length)..-1].to_a
-    # trim leading blanks from tail to avoid doubling the separator
-    tail.shift while tail.any? && tail.first.strip.empty?
-    new_lines = lines[0..fs] + src_body + ["\n"] + tail
-    tmp = "#{config_path}.tmp.#{$$}"
-    File.write(tmp, new_lines.join)
-    File.rename(tmp, config_path)
-  ' "$AI_LITELLM_CONFIG" "$facade" "$source" || return $?
-  echo "Set codex facade $facade -> $source"
-  echo "Run '\''ai-litellm sync'\'' to apply it to the running proxy."
-}
-
-ai_litellm_cmd_codex() {
-  local noun="${1:-}"; [[ $# -gt 0 ]] && shift
-  case "$noun" in
-    facade)
-      local verb="${1:-}"; [[ $# -gt 0 ]] && shift
-      case "$verb" in
-        get)
-          if [[ "${1:-}" == "--json" ]]; then
-            ai_litellm_codex_facade_json
-          else
-            ai_litellm_codex_facade_json | ai_litellm_ruby -rjson -e '
-              JSON.parse($stdin.read).each { |e| puts "#{e["facade"]}\t#{e["model"]}\t#{e["info"]}" }
-            '
-          fi
-          ;;
-        set) ai_litellm_codex_facade_set "$@" ;;
-        *) echo "Usage: ai-litellm codex facade get [--json] | facade set <facade> <source>" >&2; return 1 ;;
-      esac
-      ;;
-    *) echo "Usage: ai-litellm codex facade get [--json] | facade set <facade> <source>" >&2; return 1 ;;
-  esac
 }
 
 ai_litellm_usage() {
@@ -5917,8 +5766,6 @@ Usage: ai-litellm <group> <verb> [args]
   Key:           ai-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]
   Sync:          ai-litellm sync          Regenerate derived configs + reload proxy from the single source
   Uninstall:     ai-litellm uninstall     Remove package directory and global shims
-  Codex:         ai-litellm codex facade get [--json]
-                 ai-litellm codex facade set <facade> <source_model_name>
   Capabilities:  ai-litellm capabilities  Proxy + runtime capability summary
 
 Reasoning effort values (not a command — pass to reasoning/harness set):
@@ -5941,7 +5788,6 @@ ai_litellm() {
     harness)      ai_litellm_cmd_harness "$@" ;;
     runtime)      ai_litellm_cmd_runtime "$@" ;;
     model)        ai_litellm_cmd_model "$@" ;;
-    codex)        ai_litellm_cmd_codex "$@" ;;
     route)        ai_litellm_cmd_route "$@" ;;
     context)      ai_litellm_cmd_context "$@" ;;
     reasoning)    ai_litellm_cmd_reasoning "$@" ;;
