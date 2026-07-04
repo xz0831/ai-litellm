@@ -420,8 +420,8 @@ codex-litellm() {
     -h|--help)
       echo "Usage: codex-litellm [alias|model_name|provider_model] [codex args...]"
       echo "       codex-litellm exec \"prompt\""
-      echo "       codex-litellm gpt-5.5 exec \"prompt\""
-      echo "       codex-litellm openrouter/deepseek/deepseek-v4-pro exec \"prompt\""
+      echo "       codex-litellm glm exec \"prompt\""
+      echo "       codex-litellm openrouter/z-ai/glm-5.2 exec \"prompt\""
       echo "       codex-litellm --list|--status|--route-info [model]|--refresh-catalog   (codex-specific)"
       echo "Reasoning defaults: ai-litellm harness reasoning [set|unset] codex"
       echo "Proxy lifecycle moved to: ai-litellm proxy start|stop|restart|logs|doctor"

@@ -215,7 +215,7 @@ ai-litellm harness launch codex exec --skip-git-repo-check --sandbox read-only "
 
 ## 토큰 한도 / Context Window 관리
 
-LiteLLM-backed 모델별 context window(`max_input_tokens`)와 max output(`max_output_tokens`)의 단일 출처는 `litellm_config.yaml`의 `x-limits:` 앵커다. **underlying provider 모델당 앵커 1개**를 두고, 모든 surface 엔트리가 `model_info: *alias`로 참조한다. 6개의 surface model_name이 4개의 underlying 모델로 수렴하므로(예: `codex-auto-review`는 `Kimi-K2.7-Code-openrouter`와 같은 앵커를 공유), surface가 늘어도 한도는 underlying 앵커에만 붙는다.
+LiteLLM-backed 모델별 context window(`max_input_tokens`)와 max output(`max_output_tokens`)의 단일 출처는 `litellm_config.yaml`의 `x-limits:` 앵커다. **underlying provider 모델당 앵커 1개**를 두고, 모든 surface 엔트리가 `model_info: *alias`로 참조한다. 6개의 surface model_name은 5개의 underlying 백엔드로 수렴하며, 이들이 4개의 앵커를 공유한다(예: Qwen 27B와 35B는 의도적으로 같은 `qwen36_27b_local` 앵커를 공유; `codex-auto-review`는 `Kimi-K2.7-Code-openrouter`와 같은 앵커를 공유), surface가 늘어도 한도는 underlying 앵커에만 붙는다.
 
 입력 편의를 위해 wrapper는 `model_name`뿐 아니라 `litellm_params.model` 값도 resolver 입력으로 받는다. 예를 들어 `openrouter/z-ai/glm-5.2` 또는 `z-ai/glm-5.2`는 registry의 기존 route로 해석된다. 이는 중복 route를 git에 추가하는 것이 아니라 실행 직전 canonical `model_name`으로 매핑하는 UX 계층이다. Codex는 catalog에 없는 raw provider-facing 이름을 직접 넘기면 실패할 수 있으므로, 같은 backend를 가리키는 registry entry가 여럿이면(예: `codex-auto-review`와 `Kimi-K2.7-Code-openrouter`가 같은 Kimi 백엔드를 공유) descriptor의 `models.catalogEntries`에 실제로 노출되는(카탈로그에 slug로 등재된) 이름을 우선 선택한다 — gpt-* facade가 있던 시절의 "codex-safe facade를 우선 선택"이 남긴 규칙이 실명 시대에는 "카탈로그에 실린 이름을 우선 선택"으로 축소된 것이다.
 

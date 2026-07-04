@@ -18,7 +18,7 @@
       "discoverModels": true,
       "expectedModels": [],
       "recommendedModels": [
-        "Gemma4-12B-omlx"
+        "Qwen3.6-27B-omlx"
       ],
       "defaultModelInfo": {
         "max_input_tokens": 8192,
