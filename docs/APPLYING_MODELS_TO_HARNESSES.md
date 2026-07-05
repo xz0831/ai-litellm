@@ -225,6 +225,31 @@ your machine with `ai-litellm context matrix` and `ai-litellm model limits <name
 
 ### 5a. Cloud model via OpenRouter
 
+**Fast path — one command:**
+```zsh
+ai-litellm model add <vendor>/<model> --claude-tier <fable|opus|sonnet|haiku> --codex
+```
+This automates steps 1-4 below in one shot: it fetches `context_length` /
+`top_provider` / `supported_parameters` from OpenRouter's `/models` catalog,
+writes the `x-limits` anchor (input always provider-confidence; output
+provider-confidence if OpenRouter publishes `max_completion_tokens`, else the
+same `owned-policy` conservative fallback Mimo-V2.5 uses below, with a
+stderr review warning) plus the `model_list` route, then — because of the
+two flags — points the Claude tier alias at the new surface and appends the
+Codex `catalogEntries` line, and finally runs `ai-litellm sync`. `--name
+<Surface-Name>` pins the exact `model_name` casing: the derived default just
+title-cases each hyphen segment of the provider id's last path component, so
+`z-ai/glm-5.2` would derive as `Glm-5.2-openrouter`, not the registry's actual
+`GLM-5.2-openrouter` — use `--name GLM-5.2-openrouter` to hit the canonical
+form exactly. `--dry-run` prints the plan without writing anything.
+`ai-litellm model remove <surface> [--dry-run]` reverses it, refusing if a
+Claude tier or Codex catalog entry still points at the surface.
+
+The manual walk-through below is what `model add` automates — reach for it
+to hand-tune a value, cover a case `model add` doesn't (non-OpenRouter direct
+providers stay manual; §5b covers local models), or just to see what's
+actually happening under the hood.
+
 **1. Get the capability numbers from the provider.**
 ```zsh
 KEY=$(security find-generic-password -s openrouter-api-key -a "$USER" -w)   # macOS keychain

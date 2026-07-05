@@ -374,7 +374,30 @@ itself a consumer, composing five of these (`proxy status`, `model list`,
 
 ## Maintenance Boundary
 
-When adding or changing models:
+The fast path for an OpenRouter-backed model is one command:
+
+```zsh
+ai-litellm model add <provider-id> --claude-tier <tier> --codex   # tier: fable|opus|sonnet|haiku
+```
+
+It fetches capabilities from OpenRouter's `/models` catalog and writes a new
+`x-limits` anchor + `model_list` route (steps 1-2 below); the optional flags
+also point a Claude tier alias and append a Codex catalog entry (step 3),
+then it runs `ai-litellm sync` (step 4). `--name <surface>` pins the exact
+`model_name` casing (otherwise it's derived from the provider id);
+`--dry-run` prints the plan without writing anything. Reverse it with:
+
+```zsh
+ai-litellm model remove <surface> [--dry-run]
+```
+
+`model remove` refuses a surface still referenced by a Claude tier or Codex
+catalog entry (reassign it first), and refuses discovered/local/functional
+(`codex-auto-review`) slugs outright.
+
+`model add`/`model remove` only cover OpenRouter-backed surfaces. For
+non-OpenRouter direct providers, local/discovered routes, or a hand edit, use
+the manual procedure they automate:
 
 1. Update `config/litellm_config.yaml`.
 2. Keep one `x-limits` anchor per underlying backend model.
