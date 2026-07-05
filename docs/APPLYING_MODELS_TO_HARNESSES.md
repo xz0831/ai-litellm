@@ -283,7 +283,7 @@ ai-litellm sync                                 # regenerates codex catalog/conf
                                                 # in-flight sessions — never mid-batch).
 ai-litellm model limits NewModel-openrouter     # capability
 ai-litellm context matrix                       # window / reservation / effectiveInput per surface
-ai-litellm context doctor && ai-litellm proxy doctor
+ai-litellm doctor --context && ai-litellm doctor --proxy
 ```
 
 ### 5b. Local model via oMLX (or any `kind: openai-compatible` runtime)
@@ -373,14 +373,13 @@ accuracy tier? — these are per-model facts the fabric cannot remove.
 ## 8. Verify commands (cheat sheet)
 
 ```zsh
-ai-litellm model list                       # all surface names
+ai-litellm model list                       # all surface names + backend column (name -> backend)
 ai-litellm model limits <name>              # capability (window / output)
 ai-litellm model info <name>                # full model_info (echoed by GET /model/info)
-ai-litellm route info <name>                # backend, api_base
 ai-litellm context matrix [filter]          # per-surface window/reservation/effectiveInput
-ai-litellm context doctor                   # reservations leave input budget; pre-call on
+ai-litellm doctor --context                 # reservations leave input budget; pre-call on
 ai-litellm reasoning matrix                 # effort + drop_risk per surface
-ai-litellm proxy doctor                     # running proxy loaded current registry?
+ai-litellm doctor --proxy                   # running proxy loaded current registry?
 ai-litellm sync [--dry-run|--no-restart]    # regenerate derived configs (restarts proxy)
 ```
 

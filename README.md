@@ -113,8 +113,6 @@ layer, and creates a local LiteLLM master key if one is not already available:
 - `~/.local/bin/ai-litellm`
 - `~/.local/bin/claude-litellm`
 - `~/.local/bin/codex-litellm`
-- `~/.local/bin/openrouter-key-status`
-- `~/.local/bin/litellm-master-key-status`
 
 It creates isolated runtime directories but leaves native app directories alone.
 It does not write `~/.claude`, `~/.codex`, or `~/litellm_config.yaml`; the
@@ -183,9 +181,11 @@ ai-litellm doctor
 `ai-litellm doctor` with no arguments runs the full battery (proxy + context +
 reasoning + model-policy) and returns non-zero if any pass fails. Scope to one
 pass with `--proxy`, `--context`, `--reasoning`, `--policy`, or `--runtime
-<name>`. (`ai-litellm proxy doctor`, `ai-litellm context doctor`, etc. still
-exist as the per-group entry points and are what the unified command delegates
-to.)
+<name>`. There are no per-group `doctor` verbs anymore (`ai-litellm proxy
+doctor`, `ai-litellm context doctor`, and friends were retired); the
+`--<scope>` flags on the unified command are the only entry point, and each
+one delegates to the same check function the old per-group verb used to call
+directly.
 
 `ai-litellm sync` regenerates derived config and restarts the shared proxy by
 default, which can interrupt active LiteLLM-backed sessions. Use
@@ -356,7 +356,6 @@ Read-only commands accept `--json` for scripting:
 ai-litellm proxy status --json
 ai-litellm model list --json
 ai-litellm model limits [model] --json
-ai-litellm route list --json
 ai-litellm runtime status --json
 ai-litellm context matrix --json
 ai-litellm reasoning matrix --json
