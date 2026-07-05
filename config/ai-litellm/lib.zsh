@@ -3417,6 +3417,551 @@ RUBY
   return $rc
 }
 
+# Fetch OpenRouter /models capabilities for a single provider-id and write a
+# new x-limits anchor + model_list route (input is always provider-confidence;
+# output is provider-confidence when OpenRouter publishes a completion cap,
+# else a conservative owned-policy fallback). Optionally wires a Claude tier
+# alias (--claude-tier) and a Codex catalog entry (--codex), then syncs.
+# Fixture injection mirrors ai_litellm_model_refresh_capabilities:
+# AI_LITELLM_OPENROUTER_MODELS_JSON substitutes for the live OpenRouter fetch.
+# --dry-run prints the full plan without writing anything or syncing.
+# AI_LITELLM_SKIP_SYNC=1 performs all writes but skips the closing sync (for
+# offline registry-only tests).
+ai_litellm_model_add() {
+  local provider_id="" custom_name="" claude_tier="" codex=0 dry_run=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --name)
+        shift
+        if [[ $# -eq 0 ]]; then
+          echo "Missing value after --name" >&2
+          return 1
+        fi
+        custom_name="$1"
+        ;;
+      --claude-tier)
+        shift
+        if [[ $# -eq 0 ]]; then
+          echo "Missing value after --claude-tier" >&2
+          return 1
+        fi
+        claude_tier="$1"
+        ;;
+      --codex)
+        codex=1
+        ;;
+      --dry-run)
+        dry_run=1
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]
+
+Fetch OpenRouter capabilities for <provider-id> (an OpenRouter catalog id,
+e.g. z-ai/glm-5.2) and write a new x-limits anchor plus model_list route.
+  --name <surface>       Explicit LiteLLM model_name. Default: derived from
+                         the provider-id (e.g. deepseek/deepseek-v4-pro ->
+                         Deepseek-V4-Pro-openrouter).
+  --claude-tier <tier>   Also point a Claude Code tier at the new surface.
+                         One of: fable opus sonnet haiku.
+  --codex                Also add a Codex catalog entry for the new surface.
+  --dry-run              Print the plan without writing anything or syncing.
+
+Set AI_LITELLM_OPENROUTER_MODELS_JSON to a local fixture path to test offline.
+Set AI_LITELLM_SKIP_SYNC=1 to write everything but skip the closing sync.
+EOF
+        return 0
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        return 1
+        ;;
+      *)
+        if [[ -n "$provider_id" ]]; then
+          echo "Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]" >&2
+          return 1
+        fi
+        provider_id="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$provider_id" ]]; then
+    echo "Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]" >&2
+    return 1
+  fi
+
+  if [[ -n "$claude_tier" ]]; then
+    case "$claude_tier" in
+      fable|opus|sonnet|haiku) ;;
+      *)
+        echo "ai-litellm model add: invalid --claude-tier '$claude_tier' (expected one of: fable opus sonnet haiku)" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  # Fixture injection mirrors ai_litellm_model_refresh_capabilities: point
+  # AI_LITELLM_OPENROUTER_MODELS_JSON at a local payload for offline tests,
+  # else fetch the live catalog.
+  local payload_file cleanup=0
+  if [[ -n "${AI_LITELLM_OPENROUTER_MODELS_JSON:-}" ]]; then
+    payload_file="$AI_LITELLM_OPENROUTER_MODELS_JSON"
+    [[ -f "$payload_file" ]] || { echo "Missing AI_LITELLM_OPENROUTER_MODELS_JSON file: $payload_file" >&2; return 1; }
+  else
+    payload_file="$(mktemp "${TMPDIR:-/tmp}/openrouter-models.XXXXXX.json")" || return 1
+    cleanup=1
+    curl -fsSL https://openrouter.ai/api/v1/models > "$payload_file" || {
+      (( cleanup )) && rm -f "$payload_file"
+      return 1
+    }
+  fi
+
+  local out
+  out="$(ai_litellm_ruby -rjson -ryaml - "$AI_LITELLM_CONFIG" "$payload_file" "$provider_id" "$custom_name" "$dry_run" <<'RUBY'
+config_path, payload_path, provider_id, custom_name, dry_run_raw = ARGV
+dry_run = dry_run_raw == "1"
+
+def positive_int(value)
+  n = Integer(value)
+  n.positive? ? n : nil
+rescue
+  nil
+end
+
+# Mirrors the yaml_scalar helper in ai_litellm_model_refresh_capabilities:
+# bare for numbers/booleans/plain-safe strings, JSON-quoted otherwise so a
+# decorated source note stays valid YAML.
+def yaml_scalar(value)
+  case value
+  when Integer
+    value.to_s
+  when TrueClass, FalseClass
+    value ? "true" : "false"
+  else
+    text = value.to_s
+    text.match?(/\A[A-Za-z0-9_.\/-]+\z/) ? text : text.to_json
+  end
+end
+
+payload = JSON.parse(File.read(payload_path))
+entry = Array(payload["data"]).find { |e| e["id"] == provider_id }
+abort("model not found in OpenRouter catalog: #{provider_id}") unless entry
+
+top = entry["top_provider"] || {}
+max_input, input_source =
+  if (n = positive_int(top["context_length"]))
+    [n, "openrouter.top_provider.context_length"]
+  elsif (n = positive_int(entry["context_length"]))
+    [n, "openrouter.context_length"]
+  else
+    [nil, nil]
+  end
+abort("could not determine max_input_tokens for #{provider_id} from the OpenRouter payload") unless max_input
+
+max_out_pub = positive_int(top["max_completion_tokens"])
+output_fallback = max_out_pub.nil?
+if output_fallback
+  max_output = [max_input, 32768].min
+  output_confidence = "owned-policy"
+  output_source = "openrouter-unpublished; conservative default, review recommended"
+else
+  max_output = max_out_pub
+  output_confidence = "provider"
+  output_source = "openrouter.top_provider.max_completion_tokens"
+end
+
+params = Array(entry["supported_parameters"]).map(&:to_s)
+reasoning = params.include?("reasoning") || params.include?("reasoning_effort")
+
+raw = File.read(config_path)
+config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
+existing_names = Array(config["model_list"]).map { |e| e["model_name"] }.compact
+existing_anchors = (config["x-limits"] || {}).keys.map(&:to_s)
+
+if custom_name.to_s.empty?
+  last_segment = provider_id.to_s.split("/").last.to_s
+  surface = last_segment.split("-").map(&:capitalize).join("-") + "-openrouter"
+else
+  surface = custom_name
+end
+abort("model_name already exists in the registry: #{surface}") if existing_names.include?(surface)
+
+anchor_base = provider_id.to_s.split("/").last.to_s.downcase.gsub(/[^a-z0-9]+/, "_")
+anchor = anchor_base
+suffix = 2
+while existing_anchors.include?(anchor)
+  anchor = "#{anchor_base}_#{suffix}"
+  suffix += 1
+end
+
+anchor_lines = [
+  "  #{anchor}: &#{anchor}\n",
+  "    max_input_tokens: #{yaml_scalar(max_input)}\n",
+  "    max_output_tokens: #{yaml_scalar(max_output)}\n",
+  "    supports_reasoning: #{yaml_scalar(reasoning)}\n",
+  "    x_input_confidence: provider\n",
+  "    x_input_source: #{yaml_scalar(input_source)}\n",
+  "    x_output_confidence: #{yaml_scalar(output_confidence)}\n",
+  "    x_output_source: #{yaml_scalar(output_source)}\n",
+  "    x_reasoning_confidence: provider\n",
+  "    x_reasoning_source: openrouter.supported_parameters\n",
+  "\n",
+]
+
+backend_model = "openrouter/#{provider_id}"
+route_lines = [
+  "  - model_name: #{yaml_scalar(surface)}\n",
+  "    litellm_params:\n",
+  "      model: #{yaml_scalar(backend_model)}\n",
+  "      api_key: os.environ/OPENROUTER_API_KEY\n",
+  "    model_info: *#{anchor}\n",
+  "\n",
+]
+
+puts "ai-litellm model add #{provider_id}#{dry_run ? " (dry-run)" : ""}"
+puts "- surface: #{surface}"
+puts "- anchor: #{anchor}"
+puts "- x-limits anchor to add:"
+anchor_lines.each { |line| print line }
+puts "- model_list route to add:"
+route_lines.each { |line| print line }
+
+if dry_run
+  puts "- dry-run: no files changed"
+else
+  lines = raw.lines
+  idx_model_list = lines.index { |line| line.match?(/^model_list:\s*$/) }
+  abort("cannot locate model_list: in #{config_path}") unless idx_model_list
+  lines.insert(idx_model_list, *anchor_lines)
+
+  idx_discovered = lines.index { |line| line.match?(/^# BEGIN ai-litellm discovered local routes/) }
+  idx_general = lines.index { |line| line.match?(/^general_settings:\s*$/) }
+  insert_at = idx_discovered || idx_general || lines.length
+  lines.insert(insert_at, *route_lines)
+
+  tmp = "#{config_path}.tmp.#{$$}"
+  File.write(tmp, lines.join)
+  File.chmod(File.stat(config_path).mode & 0o777, tmp)
+  File.rename(tmp, config_path)
+  puts "- wrote #{config_path}"
+end
+
+puts "Surface: #{surface}"
+puts "Anchor: #{anchor}"
+puts "OutputCapFallback: #{output_fallback ? "yes" : "no"}"
+puts "OutputCap: #{max_output}"
+RUBY
+)"
+  local rc=$?
+  (( cleanup )) && rm -f "$payload_file"
+
+  # Split the captured report into display lines vs. machine-readable marker
+  # lines (Surface/Anchor/OutputCapFallback/OutputCap), so the human-facing
+  # preview stays clean while this function still learns the resolved surface
+  # name (custom or derived) for the --claude-tier/--codex steps below.
+  local -a display_lines
+  local surface="" anchor="" output_fallback="" output_cap="" line
+  for line in "${(@f)out}"; do
+    case "$line" in
+      "Surface: "*) surface="${line#Surface: }" ;;
+      "Anchor: "*) anchor="${line#Anchor: }" ;;
+      "OutputCapFallback: "*) output_fallback="${line#OutputCapFallback: }" ;;
+      "OutputCap: "*) output_cap="${line#OutputCap: }" ;;
+      *) display_lines+=("$line") ;;
+    esac
+  done
+  (( ${#display_lines[@]} > 0 )) && print -r -- "${(F)display_lines}"
+
+  if (( rc != 0 )); then
+    return $rc
+  fi
+
+  if [[ -z "$custom_name" ]]; then
+    echo "ai-litellm model add: derived name '$surface'; use --name for exact casing (e.g. DeepSeek-V4-Pro-openrouter)" >&2
+  fi
+  if [[ "$output_fallback" == "yes" ]]; then
+    echo "ai-litellm model add: output cap not published by OpenRouter — set a conservative $output_cap; review with 'ai-litellm model limits $surface'" >&2
+  fi
+
+  if (( dry_run )); then
+    if [[ -n "$claude_tier" ]]; then
+      echo "- would set claude tier: $claude_tier -> $surface (aliases/directAliases/displayNames)"
+    fi
+    if (( codex )); then
+      echo "- would add codex catalogEntries entry: $surface"
+    fi
+    echo "- dry-run: sync not run"
+    return 0
+  fi
+
+  if [[ -n "$claude_tier" ]]; then
+    ai_litellm_harness_alias_set claude "$claude_tier" "$surface" || return $?
+  fi
+
+  if (( codex )); then
+    local codex_descriptor
+    codex_descriptor="$(ai_litellm_harness_descriptor codex 2>/dev/null)" || {
+      echo "ai-litellm model add: no codex harness descriptor found; skipping --codex wiring" >&2
+      return 1
+    }
+    local stem display_name description
+    stem="${surface%-openrouter}"
+    display_name="$stem (openrouter)"
+    description="$provider_id via OpenRouter through LiteLLM."
+    ai_litellm_ruby -rjson -e '
+descriptor_path, slug, display_name, description = ARGV
+data = JSON.parse(File.read(descriptor_path))
+models = (data["models"] ||= {})
+entries = (models["catalogEntries"] ||= [])
+abort("codex catalogEntries already has a slug: #{slug}") if entries.any? { |e| e["slug"] == slug }
+entries << {"slug" => slug, "displayName" => display_name, "description" => description, "priority" => 88}
+tmp = "#{descriptor_path}.tmp.#{$$}"
+File.write(tmp, JSON.pretty_generate(data) + "\n")
+File.chmod(File.stat(descriptor_path).mode & 0o777, tmp)
+File.rename(tmp, descriptor_path)
+' "$codex_descriptor" "$surface" "$display_name" "$description" || return $?
+    echo "ai-litellm model add: added codex catalog entry for $surface"
+  fi
+
+  if [[ -n "${AI_LITELLM_SKIP_SYNC:-}" ]]; then
+    echo "ai-litellm model add: AI_LITELLM_SKIP_SYNC set; skipping sync (run ai-litellm sync to apply)"
+    return 0
+  fi
+
+  ai_litellm_sync
+}
+
+# Reverse of ai_litellm_model_add: locate a model_list route by its LiteLLM
+# model_name (surface) and remove it, plus its x-limits anchor if no other
+# route still references that anchor. Refuses to remove:
+#   - a discovered route (managed by ai-litellm sync, inside the BEGIN/END
+#     block)
+#   - the codex-auto-review functional slug (hardcoded by codex review)
+#   - a local runtime route (api_key: none; remove via runtime discovery
+#     instead)
+#   - a surface still referenced by a Claude tier alias (aliases or
+#     directAliases) or a Codex catalogEntries slug -- reassign/unwire first
+# --dry-run prints the plan without writing anything or syncing.
+# AI_LITELLM_SKIP_SYNC=1 performs the write but skips the closing sync (for
+# offline registry-only tests), mirroring ai_litellm_model_add.
+ai_litellm_model_remove() {
+  local surface="" dry_run=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --dry-run)
+        dry_run=1
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: ai-litellm model remove <surface> [--dry-run]
+
+Remove a model_list route by its LiteLLM model_name, plus its x-limits
+anchor if no other route still references it. Refuses to remove:
+  - a discovered route (managed by ai-litellm sync)
+  - the codex-auto-review functional slug (required by codex review)
+  - a local route (api_key: none; remove via runtime discovery instead)
+  - a surface still referenced by a Claude tier alias or a Codex catalog entry
+  --dry-run              Print the plan without writing anything or syncing.
+
+Set AI_LITELLM_SKIP_SYNC=1 to write everything but skip the closing sync.
+EOF
+        return 0
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        return 1
+        ;;
+      *)
+        if [[ -n "$surface" ]]; then
+          echo "Usage: ai-litellm model remove <surface> [--dry-run]" >&2
+          return 1
+        fi
+        surface="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$surface" ]]; then
+    echo "Usage: ai-litellm model remove <surface> [--dry-run]" >&2
+    return 1
+  fi
+
+  # Reference checks reuse the existing harness helpers (same descriptor/path
+  # resolution as ai_litellm_harness_alias_set and model add --codex) rather
+  # than re-deriving settings-file lookup here.
+  local claude_alias_json
+  claude_alias_json="$(ai_litellm_harness_alias_json claude 2>/dev/null)"
+  [[ -n "$claude_alias_json" ]] || claude_alias_json="[]"
+
+  local codex_descriptor=""
+  codex_descriptor="$(ai_litellm_harness_descriptor codex 2>/dev/null)" || codex_descriptor=""
+
+  ai_litellm_ruby -rjson -ryaml - "$AI_LITELLM_CONFIG" "$surface" "$dry_run" "$claude_alias_json" "$codex_descriptor" <<'RUBY'
+config_path, surface, dry_run_raw, claude_alias_raw, codex_descriptor_path = ARGV
+dry_run = dry_run_raw == "1"
+
+# Mirrors the yaml_scalar helper in ai_litellm_model_add: bare for
+# numbers/booleans/plain-safe strings, JSON-quoted otherwise -- used here to
+# rebuild the exact raw model_name token so the surface can be located by
+# regex in the raw text (not just the parsed YAML).
+def yaml_scalar(value)
+  case value
+  when Integer
+    value.to_s
+  when TrueClass, FalseClass
+    value ? "true" : "false"
+  else
+    text = value.to_s
+    text.match?(/\A[A-Za-z0-9_.\/-]+\z/) ? text : text.to_json
+  end
+end
+
+# A route entry (and an x-limits anchor stanza) ends at the last line
+# indented as one of its own fields -- the first line that is blank, a
+# comment, the next `- model_name:`, the discovered BEGIN marker, or a
+# top-level key all have fewer than 4 leading spaces, so a single
+# indentation test finds the boundary in every case. ai_litellm_model_add
+# always appends its new stanza with a trailing blank separator line
+# (mirroring the file convention that every route, and the last x-limits
+# anchor before model_list, is followed by exactly one blank line); that
+# insertion leaves the pre-existing separator blank immediately before the
+# stanza and the new trailing blank immediately after it. Deleting only the
+# stanza content would therefore leave those two blank lines adjacent (one
+# too many); when that exact pattern is present, extend the deletion by one
+# line to collapse back to a single blank, restoring byte-identical output
+# on an add-then-remove round trip.
+def block_finish(lines, start)
+  finish = ((start + 1)...lines.length).find { |idx| !lines[idx].match?(/^\s{4,}\S/) } || lines.length
+  before_blank = start > 0 && lines[start - 1].match?(/\A\s*\z/)
+  after_blank = finish < lines.length && lines[finish].match?(/\A\s*\z/)
+  finish += 1 if before_blank && after_blank
+  finish
+end
+
+claude_aliases = (JSON.parse(claude_alias_raw) rescue [])
+claude_aliases = [] unless claude_aliases.is_a?(Array)
+
+codex_catalog =
+  if codex_descriptor_path.to_s.empty?
+    []
+  else
+    begin
+      Array(JSON.parse(File.read(codex_descriptor_path)).dig("models", "catalogEntries"))
+    rescue
+      []
+    end
+  end
+
+raw = File.read(config_path)
+config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
+
+# Step 1: find the route.
+entries = Array(config["model_list"])
+target = entries.find { |e| e["model_name"].to_s == surface }
+abort("model not found in registry: #{surface}") unless target
+
+lines = raw.lines
+name_pattern = /^  - model_name:\s*#{Regexp.escape(yaml_scalar(surface))}\s*$/
+start = lines.index { |l| l.match?(name_pattern) }
+abort("cannot locate model_list route for #{surface} in #{config_path}") unless start
+
+# Step 2: guards (discovered block, functional slug, local runtime route).
+idx_begin = lines.index { |l| l.match?(/^# BEGIN ai-litellm discovered local routes/) }
+idx_end   = lines.index { |l| l.match?(/^# END ai-litellm discovered local routes/) }
+if idx_begin && idx_end && start > idx_begin && start < idx_end
+  abort("#{surface}: discovered route — managed by runtime discovery")
+end
+
+abort("#{surface}: functional slug required by codex review") if surface == "codex-auto-review"
+
+api_key = target.dig("litellm_params", "api_key").to_s
+abort("#{surface}: local route — remove via runtime") if api_key == "none"
+
+# Step 3: reference checks (claude tier aliases, codex catalogEntries).
+backend = target.dig("litellm_params", "model").to_s
+provider_id = backend.sub(%r{\Aopenrouter/}, "")
+
+ref_tiers = claude_aliases.select do |row|
+  row["model"].to_s == surface || (!provider_id.empty? && row["direct"].to_s == provider_id)
+end.map { |row| row["tier"].to_s }
+abort("#{surface}: referenced by tier #{ref_tiers.join(", ")}; reassign the tier first") unless ref_tiers.empty?
+
+if codex_catalog.any? { |e| e["slug"].to_s == surface }
+  abort("#{surface}: in codex catalogEntries; remove --codex wiring first")
+end
+
+# Step 4: anchor determination.
+finish = block_finish(lines, start)
+route_text = lines[start...finish].join
+anchor_name = route_text[/^\s+model_info:\s*\*([A-Za-z0-9_]+)\s*$/, 1]
+
+anchor_counts = Hash.new(0)
+raw.split(/\n(?=  - model_name:\s*)/).each do |chunk|
+  chunk_anchor = chunk[/^\s+model_info:\s*\*([A-Za-z0-9_]+)\s*$/, 1]
+  anchor_counts[chunk_anchor] += 1 if chunk_anchor
+end
+orphaned = anchor_name && anchor_counts[anchor_name] <= 1
+
+a_start = a_finish = anchor_text = nil
+if orphaned
+  a_start = lines.index { |l| l.match?(/^  #{Regexp.escape(anchor_name)}:\s*&#{Regexp.escape(anchor_name)}\s*$/) }
+  if a_start
+    a_finish = block_finish(lines, a_start)
+    anchor_text = lines[a_start...a_finish].join
+  end
+end
+
+puts "ai-litellm model remove #{surface}#{dry_run ? " (dry-run)" : ""}"
+puts "- backend: #{backend}"
+if anchor_name
+  if orphaned
+    puts "- anchor: #{anchor_name} (orphaned, will be removed)"
+  else
+    puts "- anchor: #{anchor_name} (still referenced by #{anchor_counts[anchor_name] - 1} other route(s), kept)"
+  end
+else
+  puts "- anchor: none"
+end
+puts "- model_list route to remove:"
+route_text.each_line { |l| print l }
+if orphaned && a_start
+  puts "- x-limits anchor to remove:"
+  anchor_text.each_line { |l| print l }
+end
+
+# Step 5/6: delete (route, then the now-orphaned anchor if any) + atomic
+# write, unless --dry-run. The route is always deleted before the anchor so
+# the anchor indices (computed above, earlier in the file) stay valid.
+if dry_run
+  puts "- dry-run: no files changed"
+else
+  lines.slice!(start...finish)
+  lines.slice!(a_start...a_finish) if orphaned && a_start
+  tmp = "#{config_path}.tmp.#{$$}"
+  File.write(tmp, lines.join)
+  File.chmod(File.stat(config_path).mode & 0o777, tmp)
+  File.rename(tmp, config_path)
+  puts "- wrote #{config_path}"
+end
+RUBY
+  local rc=$?
+  (( rc != 0 )) && return $rc
+
+  (( dry_run )) && return 0
+
+  if [[ -n "${AI_LITELLM_SKIP_SYNC:-}" ]]; then
+    echo "ai-litellm model remove: AI_LITELLM_SKIP_SYNC set; skipping sync (run ai-litellm sync to apply)"
+    return 0
+  fi
+
+  ai_litellm_sync
+}
+
 # Provider/backend reasoning capability table from the LiteLLM registry. It
 # shows route-level defaults before any harness intent is considered.
 ai_litellm_model_reasoning_table() {
@@ -5541,6 +6086,8 @@ ai_litellm_cmd_model() {
       fi
       ;;
     refresh-capabilities) ai_litellm_model_refresh_capabilities "$@" ;;
+    add)                  ai_litellm_model_add "$@" ;;
+    remove)               ai_litellm_model_remove "$@" ;;
     reasoning)
       case "${1:-}" in
         probe)   shift; ai_litellm_model_reasoning_probe "$@" ;;
@@ -5550,7 +6097,7 @@ ai_litellm_cmd_model() {
         *)       echo "Usage: ai-litellm model reasoning probe <model> [effort]|set <model> <effort>|unset <model>|allowed <model>" >&2; return 1 ;;
       esac
       ;;
-    *) echo "Usage: ai-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [--apply|--json|--check]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|reasoning allowed <model>" >&2; return 1 ;;
+    *) echo "Usage: ai-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [--apply|--json|--check]|add <provider-id> [--name|--claude-tier|--codex|--dry-run]|remove <surface> [--dry-run]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|reasoning allowed <model>" >&2; return 1 ;;
   esac
 }
 
@@ -5709,6 +6256,8 @@ Usage: ai-litellm <group> <verb> [args]
                  ai-litellm harness reasoning unset <name>
   Runtime:       ai-litellm runtime list|status [name]
   Model:         ai-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [opts]
+                 ai-litellm model add <provider-id> [--name|--claude-tier|--codex|--dry-run]
+                 ai-litellm model remove <surface> [--dry-run]
                  ai-litellm model reasoning probe <model> [effort]
                  ai-litellm model reasoning set <model> <effort>
                  ai-litellm model reasoning unset <model>

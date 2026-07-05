@@ -409,10 +409,40 @@ ai_litellm_context_gateway_cost_guardrail_configured
 ai_litellm_context_observations_ok
 ai_litellm_model_info_anchor_refs_ok
 openrouter_models_fixture="$HOME/openrouter-models.json"
-print -r -- "{\"data\":[{\"id\":\"moonshotai/kimi-k2.7-code\",\"context_length\":262144,\"top_provider\":{\"context_length\":262144,\"max_completion_tokens\":16384},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"xiaomi/mimo-v2.5\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"z-ai/glm-5.2\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":128000},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]}]}" > "$openrouter_models_fixture"
+print -r -- "{\"data\":[{\"id\":\"moonshotai/kimi-k2.7-code\",\"context_length\":262144,\"top_provider\":{\"context_length\":262144,\"max_completion_tokens\":16384},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"xiaomi/mimo-v2.5\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"z-ai/glm-5.2\",\"context_length\":1048576,\"top_provider\":{\"context_length\":1048576,\"max_completion_tokens\":128000},\"supported_parameters\":[\"reasoning\",\"reasoning_effort\"]},{\"id\":\"testorg/test-model-x\",\"context_length\":100000,\"top_provider\":{\"context_length\":100000,\"max_completion_tokens\":8000},\"supported_parameters\":[\"reasoning\"]}]}" > "$openrouter_models_fixture"
 export AI_LITELLM_OPENROUTER_MODELS_JSON="$openrouter_models_fixture"
 ai_litellm_model_refresh_capabilities --check >/dev/null
 ai_litellm_model_policy_audit >/dev/null
+# ── P6 Task 1: model add/remove RED (offline, fixture-injected) ─────────────
+# add/remove verbs do not exist yet (T2/T3 land them); this section is
+# expected to fail loud at the very first assertion below until model add is
+# implemented. Reuses openrouter_models_fixture (still exported above as
+# AI_LITELLM_OPENROUTER_MODELS_JSON) plus the synthetic testorg/test-model-x
+# entry appended to its data array. Ordered so nothing here can poison the
+# lineup-model assertions further down: --dry-run writes nothing, the
+# add-then-remove round trip fully reverts AI_LITELLM_CONFIG before the guard
+# assertion runs, and the guard assertion (remove of a tier-referenced
+# surface) must loud-fail without writing anything at all.
+add_plan="$(AI_LITELLM_OPENROUTER_MODELS_JSON="$openrouter_models_fixture" "$HOME/.local/bin/ai-litellm" model add testorg/test-model-x --name Test-Model-X-openrouter --dry-run 2>&1)"
+print -r -- "$add_plan" | grep -q "Test-Model-X-openrouter"
+print -r -- "$add_plan" | grep -q "max_input_tokens: 100000"
+# dry-run wrote nothing. if-form, not bare `! grep`: zsh exempts a bare
+# negated pipeline from set -e/ERR_EXIT, which would make this assertion
+# silently vacuous (see the ~L395 comment on the same hazard).
+if grep -q "Test-Model-X-openrouter" "$AI_LITELLM_CONFIG"; then echo "FAIL: model add --dry-run wrote to the registry"; exit 1; fi
+echo "ok: model add --dry-run plans without writing"
+AI_LITELLM_SKIP_SYNC=1 AI_LITELLM_OPENROUTER_MODELS_JSON="$openrouter_models_fixture" "$HOME/.local/bin/ai-litellm" model add testorg/test-model-x --name Test-Model-X-openrouter >/dev/null 2>&1
+grep -q "model_name: Test-Model-X-openrouter" "$AI_LITELLM_CONFIG"
+grep -q "max_input_tokens: 100000" "$AI_LITELLM_CONFIG"
+ai_litellm_ruby -ryaml -e "(YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))" "$AI_LITELLM_CONFIG"   # still valid YAML w/ aliases
+AI_LITELLM_SKIP_SYNC=1 "$HOME/.local/bin/ai-litellm" model remove Test-Model-X-openrouter >/dev/null 2>&1
+# revert check. if-form for the same zsh set-e/bare-! reason as above.
+if grep -q "Test-Model-X-openrouter" "$AI_LITELLM_CONFIG"; then echo "FAIL: model remove did not revert the registry"; exit 1; fi
+echo "ok: model add/remove round-trip writes+reverts registry"
+# GLM-5.2-openrouter is the opus tier alias in the installed config under test
+# (config/claude-litellm/settings.json aliases.opus); removing it must refuse.
+if AI_LITELLM_SKIP_SYNC=1 "$HOME/.local/bin/ai-litellm" model remove GLM-5.2-openrouter >/dev/null 2>&1; then echo "FAIL: removed a tier-referenced model"; exit 1; fi
+echo "ok: model remove refuses tier-referenced surface"
 PYTHONPATH="$prefix/config" AI_LITELLM_CONFIG="$prefix/config/litellm_config.yaml" python3 - <<'"'"'PY'"'"'
 from ai_litellm_callbacks.output_clamp import (
     CALLBACK_NAME,
