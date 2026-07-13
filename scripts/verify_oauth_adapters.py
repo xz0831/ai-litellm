@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import copy
 import contextlib
 import io
 import json
@@ -24,6 +25,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -175,6 +177,17 @@ def main() -> int:
     # monkeypatches. The production bootstrap must pin one process even when an
     # ambient NUM_WORKERS value or an unsafe CLI option is supplied.
     config_import_root = str(REPO / "config")
+    endpoint_override_names = (
+        "CHATGPT_API_BASE",
+        "OPENAI_CHATGPT_API_BASE",
+        "XAI_OAUTH_API_BASE",
+        "XAI_API_BASE",
+    )
+    saved_endpoint_overrides = {
+        name: os.environ.get(name) for name in endpoint_override_names
+    }
+    poisoned_endpoint = "http://127.0.0.1:9/oauth-token-capture"
+    os.environ.update({name: poisoned_endpoint for name in endpoint_override_names})
     sys.path.insert(0, config_import_root)
     try:
         bootstrap_spec = importlib.util.spec_from_file_location(
@@ -186,6 +199,72 @@ def main() -> int:
         bootstrap_spec.loader.exec_module(bootstrap)
     finally:
         sys.path.remove(config_import_root)
+    try:
+        # Import-time policy must run before any LiteLLM-backed callback can
+        # resolve an inference origin. Re-poison and exercise the callable too,
+        # because an embedding process could mutate its environment after import.
+        assert set(bootstrap.OAUTH_PROVIDER_ENDPOINT_OVERRIDE_ENV) == set(
+            endpoint_override_names
+        )
+        assert bootstrap.CHATGPT_STREAM_PATCH_REQUIRED is True
+        assert bootstrap.CHATGPT_STREAM_PATCH_ACTIVE is True
+        assert bootstrap.CHATGPT_SYSTEM_PATCH_ACTIVE is True
+        assert all(name not in os.environ for name in endpoint_override_names)
+
+        from litellm.constants import XAI_API_BASE
+        from litellm.llms.chatgpt.authenticator import Authenticator as EndpointChatGPTAuthenticator
+        from litellm.llms.chatgpt.common_utils import CHATGPT_API_BASE
+        from litellm.llms.chatgpt.responses.transformation import (
+            ChatGPTResponsesAPIConfig,
+        )
+        from litellm.llms.xai.oauth import XAIOAuthAuthenticator as EndpointXAIAuthenticator
+
+        chatgpt_endpoint_auth = EndpointChatGPTAuthenticator.__new__(
+            EndpointChatGPTAuthenticator
+        )
+        xai_endpoint_auth = EndpointXAIAuthenticator.__new__(EndpointXAIAuthenticator)
+        # Reintroducing poison after bootstrap import must still be harmless:
+        # the OAuth guard pins the adapter methods to provider constants.
+        os.environ.update({name: poisoned_endpoint for name in endpoint_override_names})
+        assert chatgpt_endpoint_auth.get_api_base() == CHATGPT_API_BASE
+        assert xai_endpoint_auth.get_api_base() == XAI_API_BASE
+        chatgpt_responses_config = ChatGPTResponsesAPIConfig.__new__(
+            ChatGPTResponsesAPIConfig
+        )
+        assert chatgpt_responses_config.get_complete_url(
+            poisoned_endpoint, {}
+        ) == f"{CHATGPT_API_BASE}/responses"
+        assert poisoned_endpoint not in {
+            chatgpt_endpoint_auth.get_api_base(),
+            xai_endpoint_auth.get_api_base(),
+        }
+
+        # A rolling/partial upgrade can encounter the marker installed by an
+        # older guard while its endpoint getter still honors ambient overrides.
+        # Reloading the current guard must repair that state instead of treating
+        # the legacy redaction marker alone as proof that the origin is pinned.
+        def legacy_xai_api_base(self: Any) -> str:
+            return os.environ["XAI_OAUTH_API_BASE"]
+
+        EndpointXAIAuthenticator.get_api_base = legacy_xai_api_base
+        EndpointXAIAuthenticator._claude_litellm_redacted = True
+        repaired_guard = _load_oauth_guard()
+        assert repaired_guard.PATCH_ACTIVE is True
+        repaired_xai_getter = EndpointXAIAuthenticator.get_api_base
+        assert getattr(
+            repaired_xai_getter,
+            "_claude_litellm_official_endpoint",
+            False,
+        ) is True
+        assert xai_endpoint_auth.get_api_base() == XAI_API_BASE
+        bootstrap.enforce_official_oauth_provider_endpoints()
+        assert all(name not in os.environ for name in endpoint_override_names)
+    finally:
+        for name, value in saved_endpoint_overrides.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     old_workers = os.environ.get("NUM_WORKERS")
     try:
         os.environ["NUM_WORKERS"] = "9"
@@ -287,6 +366,90 @@ def main() -> int:
     )
 
     bridge = LiteLLMResponsesTransformationHandler()
+
+    # LiteLLM 1.92 only promotes string system messages to Responses
+    # instructions. The bootstrap patch must flatten Claude's text-block system
+    # shape for ChatGPT only, without mutating caller input or weakening other
+    # providers.
+    from litellm import LiteLLMLoggingObj, ModelResponse
+    from litellm.completion_extras.litellm_responses_transformation.handler import (
+        ResponsesToCompletionBridgeHandler,
+    )
+    from litellm.exceptions import UnsupportedParamsError
+
+    system_messages = [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "alpha",
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "input_text", "text": "beta"},
+            ],
+        },
+        {"role": "system", "content": "gamma"},
+        {"role": "user", "content": "continue"},
+    ]
+    original_system_messages = copy.deepcopy(system_messages)
+    logging_obj = LiteLLMLoggingObj(
+        model="gpt-5.4",
+        messages=system_messages,
+        stream=True,
+        call_type="completion",
+        start_time=datetime.now(timezone.utc),
+        litellm_call_id="offline-system-block-call",
+        function_id="offline-system-block-function",
+    )
+    common_kwargs = {
+        "model": "gpt-5.4",
+        "messages": system_messages,
+        "optional_params": {"stream": True},
+        "litellm_params": {},
+        "headers": {},
+        "model_response": ModelResponse(model="gpt-5.4"),
+        "logging_obj": logging_obj,
+    }
+    completion_bridge = ResponsesToCompletionBridgeHandler()
+    chatgpt_validated = completion_bridge.validate_input_kwargs(
+        {**common_kwargs, "custom_llm_provider": "chatgpt"}
+    )
+    assert chatgpt_validated["messages"][0]["content"] == "alpha\n\nbeta"
+    assert system_messages == original_system_messages
+    chatgpt_request = completion_bridge.transformation_handler.transform_request(
+        model=chatgpt_validated["model"],
+        messages=chatgpt_validated["messages"],
+        optional_params=chatgpt_validated["optional_params"],
+        litellm_params=chatgpt_validated["litellm_params"],
+        headers=chatgpt_validated["headers"],
+        litellm_logging_obj=chatgpt_validated["logging_obj"],
+    )
+    assert chatgpt_request["instructions"] == "alpha\n\nbeta gamma"
+    assert all(item.get("role") != "system" for item in chatgpt_request["input"])
+
+    xai_validated = completion_bridge.validate_input_kwargs(
+        {**common_kwargs, "custom_llm_provider": "xai"}
+    )
+    assert xai_validated["messages"] == original_system_messages
+    assert isinstance(xai_validated["messages"][0]["content"], list)
+
+    unsupported_messages = [
+        {"role": "system", "content": [{"type": "image", "source": "blocked"}]},
+        {"role": "user", "content": "continue"},
+    ]
+    try:
+        completion_bridge.validate_input_kwargs({
+            **common_kwargs,
+            "messages": unsupported_messages,
+            "custom_llm_provider": "chatgpt",
+        })
+    except UnsupportedParamsError as exc:
+        assert exc.status_code == 400
+        assert "system block 0" in str(exc)
+    else:
+        raise AssertionError("ChatGPT accepted an unsupported system block")
+
     recovered_choices = bridge._convert_response_output_to_choices(
         output_items=recovered_output,
         handle_raw_dict_callback=bridge._handle_raw_dict_response_item,

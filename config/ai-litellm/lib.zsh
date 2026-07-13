@@ -2691,7 +2691,13 @@ assert PATCH_ACTIVE is True
     # only the launcher/proxy descendants and never the interactive shell. Do
     # not pass NAME=secret pairs through /usr/bin/env: they are process argv and
     # can be sampled by other same-user tools while the launcher is starting.
-    unset OPENAI_API_KEY XAI_API_KEY
+    # OAuth inference origins are package policy, not ambient configuration.
+    # LiteLLM attaches bearer tokens after consulting these variables, so an
+    # inherited override could otherwise redirect a token before the Python
+    # bootstrap gets a chance to enforce the same boundary again.
+    unset OPENAI_API_KEY XAI_API_KEY \
+      CHATGPT_API_BASE OPENAI_CHATGPT_API_BASE \
+      XAI_OAUTH_API_BASE XAI_API_BASE
     export OPENROUTER_API_KEY="$openrouter_key"
     export LITELLM_MASTER_KEY="$master_key"
     export AI_LITELLM_HOST="$(ai_litellm_host)"
@@ -5560,8 +5566,9 @@ PY
 }
 
 # Exercise the exact Anthropic Messages surface Claude Code consumes. A model
-# is qualified only after text SSE, forced tool_use, streamed input_json_delta,
-# and a tool_result continuation all pass with a 128-token response allowance.
+# is qualified only after text SSE, Claude system blocks, forced tool_use,
+# streamed input_json_delta, a tool_result continuation, and adaptive effort
+# all pass with bounded response allowances.
 # Optional activation is deliberately last so a failed candidate never replaces
 # a working Claude tier.
 _ai_litellm_model_qualify_unlocked() {
@@ -5578,7 +5585,7 @@ _ai_litellm_model_qualify_unlocked() {
         cat <<'EOF'
 Usage: claude-litellm model qualify <surface> [--activate-tier fable|opus|sonnet|haiku] [--json]
 
-Run the five live /v1/messages compatibility gates. Cloud routes can incur a
+Run the six live /v1/messages compatibility gates. Cloud routes can incur a
 small provider charge. --activate-tier changes the Claude alias only on PASS.
 EOF
         return 0
@@ -5598,7 +5605,12 @@ EOF
     return 1
   }
   local verifier="$AI_LITELLM_HOME/scripts/verify_tool_call_fidelity.py"
+  local install_manifest="$AI_LITELLM_HOME/install-manifest.json"
   [[ -f "$verifier" ]] || { echo "Missing live qualification harness: $verifier" >&2; return 1; }
+  [[ -f "$install_manifest" && ! -L "$install_manifest" ]] || {
+    echo "Missing or unsafe install manifest: $install_manifest" >&2
+    return 1
+  }
   local python master_key backend
   python="$(ai_litellm_litellm_python 2>/dev/null)" || {
     echo "Missing managed LiteLLM Python runtime." >&2
@@ -5630,10 +5642,13 @@ EOF
   # alias update.
   ai_litellm_model_runtime "$model" >/dev/null 2>&1 || \
     echo "Live qualification may issue billable provider requests for $model." >&2
-  local verdict rc
-  verdict="$(LITELLM_MASTER_KEY="$master_key" ai_litellm_run_timeout 300 "$python" -I -B "$verifier" \
-    --live-only --live-model "$model" --live-base-url "$(ai_litellm_base_url)" --json)"
-  rc=$?
+  local verdict rc verdict_rc
+  if verdict="$(LITELLM_MASTER_KEY="$master_key" ai_litellm_run_timeout 420 "$python" -I -B "$verifier" \
+    --live-only --live-model "$model" --live-base-url "$(ai_litellm_base_url)" --json)"; then
+    verdict_rc=0
+  else
+    verdict_rc=$?
+  fi
   if (( as_json )); then
     print -r -- "$verdict"
   else
@@ -5641,26 +5656,35 @@ EOF
       .live as $v |
       "Live /v1/messages qualification (\($v.model)):",
       "  text SSE                    " + (if $v.text_sse then "PASS" else "FAIL" end),
+      "  Claude system blocks        " + (if $v.claude_system_block_instructions then "PASS" else "FAIL" end),
       "  forced structured tool     " + (if $v.forced_structured_tool then "PASS" else "FAIL" end),
       "  streaming input_json_delta " + (if $v.streaming_input_json_delta then "PASS" else "FAIL" end),
       "  tool_result continuation   " + (if $v.tool_result_continuation then "PASS" else "FAIL" end),
+      "  adaptive effort policy     " + (if $v.claude_adaptive_effort_policy then "PASS" else "FAIL" end),
       "=> " + (if .all_critical_pass then "QUALIFIED" else "FAILED" end)'
   fi
-  if (( rc != 0 )); then
-    ai_litellm_user_mutation_lock_release
-    return $rc
-  fi
-
   mkdir -p "$AI_LITELLM_PROXY_HOME"
   chmod 700 "$AI_LITELLM_PROXY_HOME"
-  ai_litellm_python_isolated "$python" - "$AI_LITELLM_QUALIFICATIONS_FILE" "$AI_LITELLM_CONFIG" "$model" "$backend" "$verdict" <<'PY'
+  ai_litellm_python_isolated "$python" - "$AI_LITELLM_QUALIFICATIONS_FILE" "$AI_LITELLM_CONFIG" "$verifier" "$install_manifest" "$model" "$backend" "$verdict_rc" "$verdict" <<'PY'
 import hashlib, json, os, sys, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 import stat
 
-state_raw, config_raw, model, backend, verdict_raw = sys.argv[1:]
-state_path, config_path = Path(state_raw), Path(config_raw)
+(
+    state_raw,
+    config_raw,
+    verifier_raw,
+    manifest_raw,
+    model,
+    backend,
+    verifier_exit_raw,
+    verdict_raw,
+) = sys.argv[1:]
+state_path = Path(state_raw)
+config_path = Path(config_raw)
+verifier_path = Path(verifier_raw)
+manifest_path = Path(manifest_raw)
 if state_path.exists() or state_path.is_symlink():
     mode = state_path.lstat().st_mode
     if stat.S_ISLNK(mode) or not stat.S_ISREG(mode) or stat.S_IMODE(mode) != 0o600:
@@ -5670,12 +5694,40 @@ else:
     state = {"schemaVersion": 1, "models": {}}
 if state.get("schemaVersion") != 1 or not isinstance(state.get("models"), dict):
     raise SystemExit("unsupported or malformed qualification state")
-state.setdefault("models", {})[model] = {
-    "qualifiedAt": datetime.now(timezone.utc).isoformat(),
+try:
+    verdict = json.loads(verdict_raw)
+    live = verdict["live"]
+    verifier_exit = int(verifier_exit_raw)
+    passed = (
+        verifier_exit == 0
+        and verdict.get("all_critical_pass") is True
+        and live.get("all_gates_pass") is True
+    )
+except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+    live = {
+        "model": model,
+        "all_gates_pass": False,
+        "qualification_error": "verifier exited without a valid verdict",
+    }
+    passed = False
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+attempted_at = datetime.now(timezone.utc).isoformat()
+entry = {
+    "attemptedAt": attempted_at,
+    "passed": passed,
     "providerModel": backend,
+    "gateSetVersion": 2,
+    "verifierExitCode": int(verifier_exit_raw),
     "configSha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
-    "gates": json.loads(verdict_raw)["live"],
+    "verifierSha256": hashlib.sha256(verifier_path.read_bytes()).hexdigest(),
+    "installManifestSha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    "sourceCommit": (manifest.get("source") or {}).get("commit"),
+    "runtimeContentFingerprint": (manifest.get("runtime") or {}).get("contentFingerprint"),
+    "gates": live,
 }
+if passed:
+    entry["qualifiedAt"] = attempted_at
+state.setdefault("models", {})[model] = entry
 state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 fd, staged_raw = tempfile.mkstemp(prefix=f".{state_path.name}.", dir=state_path.parent)
 with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -5683,12 +5735,25 @@ with os.fdopen(fd, "w", encoding="utf-8") as stream:
     json.dump(state, stream, indent=2, ensure_ascii=False)
     stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
 os.replace(staged_raw, state_path); os.chmod(state_path, 0o600)
+if not passed:
+    raise SystemExit(3)
 PY
   rc=$?
+  if (( rc == 3 )); then
+    ai_litellm_user_mutation_lock_release
+    if (( verdict_rc != 0 )); then
+      return $verdict_rc
+    fi
+    return 1
+  fi
   if (( rc != 0 )); then
     ai_litellm_user_mutation_lock_release
     echo "Failed to persist qualification evidence; Claude aliases were not changed." >&2
     return $rc
+  fi
+  if (( verdict_rc != 0 )); then
+    ai_litellm_user_mutation_lock_release
+    return $verdict_rc
   fi
 
   if [[ -n "$activate_tier" ]]; then

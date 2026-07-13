@@ -7,7 +7,7 @@ register/discover -> inspect limits -> qualify /v1/messages -> activate tier
 ```
 
 Activation is last. `model qualify --activate-tier` changes a Claude tier only
-when all five compatibility gates pass. Direct `harness alias set` remains an
+when all six compatibility gates pass. Direct `harness alias set` remains an
 explicit administrative bypass.
 
 ## Configuration layers
@@ -115,22 +115,26 @@ for the single generated block.
 ## Qualification contract
 
 The live command keeps structured tool-call requests at `max_tokens=128`.
-Text SSE, tool-result continuation, and adaptive-effort requests use
+Text SSE, Claude system-block, tool-result continuation, and adaptive-effort requests use
 `max_tokens=512` so reasoning-first models have room to finish a visible
 answer. It requires:
 
-1. Anthropic text SSE with a non-empty text delta
-2. Forced tool selection returned as a native `tool_use`
-3. Streaming `input_json_delta` fragments that reconstruct valid JSON
-4. A successful continuation after replaying the exact assistant content
+1. Anthropic text SSE with a non-empty text delta and clean `message_stop`
+2. Two Claude-style system text blocks preserved as provider instructions,
+   with a clean completed stream
+3. Forced tool selection returned as a native `tool_use`
+4. Streaming `input_json_delta` fragments that reconstruct valid JSON and end
+   with a clean `message_stop`
+5. A successful continuation after replaying the exact assistant content
    (including thinking/signatures) and actual tool ID in `tool_result`
-5. A non-empty successful response to Claude Code's adaptive-thinking request
+6. A non-empty successful response to Claude Code's adaptive-thinking request
    with `output_config.effort`, after applying the route's effort policy
 
 Cloud qualification can incur a small provider charge. A passing record is
 stored under the package state directory with timestamp, provider model,
-effective-config hash and gate results. It is evidence for that configuration,
-not a permanent claim about a provider that may change later.
+gate-set version, effective-config hash, verifier hash and gate results. It is
+evidence for that exact contract, not a permanent claim about a provider that
+may change later.
 
 ## Reasoning and effort
 
@@ -167,7 +171,7 @@ not proof that the level reached or influenced the upstream model. Compare
 repeated low/high trials and inspect a provider-side outbound trace where one is
 available before advertising a level.
 
-The same shape is the fifth qualification gate. Its policy depends on the route:
+The same shape is the sixth qualification gate. Its policy depends on the route:
 a selectable value is forwarded, a sole allowed value is normalized, and a
 route with no selectable slot removes only effort while retaining
 adaptive/provider-default reasoning. A dropped effort is never recorded as

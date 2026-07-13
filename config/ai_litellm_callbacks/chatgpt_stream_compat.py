@@ -1,9 +1,16 @@
-"""LiteLLM 1.92.0 compatibility for ChatGPT's empty completed output.
+"""LiteLLM 1.92.0 compatibility for ChatGPT's Responses bridge.
 
 ChatGPT's Codex backend can stream the real assistant items in
 ``response.output_item.done`` events and then send ``response.completed`` with
 ``output: []``.  LiteLLM 1.92.0 discards those earlier items, so its
 chat-completions bridge later fails with ``Unknown items ... []``.
+
+The same bridge only promotes string-valued system messages to top-level
+Responses ``instructions``. Claude Code sends its Anthropic system prompt as a
+list of text blocks, which LiteLLM otherwise forwards as an ``input`` item with
+``role=system``. The ChatGPT Codex backend rejects that shape with ``System
+messages are not allowed``. Normalize only ChatGPT bridge inputs, keeping the
+system text at instruction authority instead of merging it into a user turn.
 
 The upstream fix is still unmerged (BerriAI/litellm#31332).  Keep this local
 shim deliberately narrow: it applies only to exactly LiteLLM 1.92.0 and only
@@ -22,6 +29,7 @@ from typing import Any
 EXPECTED_LITELLM_VERSION = "1.92.0"
 _STATE_ATTRIBUTE = "_claude_litellm_chatgpt_streamed_output_items"
 _PATCH_MARKER = "_claude_litellm_chatgpt_output_recovery"
+_SYSTEM_PATCH_MARKER = "_claude_litellm_chatgpt_system_blocks"
 
 
 def _installed_litellm_version() -> str | None:
@@ -52,6 +60,124 @@ def _plain_output_item(item: Any) -> dict[str, Any]:
         if isinstance(dumped, dict):
             return dumped
     raise TypeError("streamed output item is not serializable")
+
+
+def _plain_system_block(block: Any) -> dict[str, Any]:
+    if isinstance(block, dict):
+        return block
+    model_dump = getattr(block, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        if isinstance(dumped, dict):
+            return dumped
+    raise TypeError("ChatGPT system content blocks must be text objects")
+
+
+def _unsupported_system_content(message: str, model: str) -> None:
+    from litellm.exceptions import UnsupportedParamsError
+
+    raise UnsupportedParamsError(
+        message=message,
+        llm_provider="chatgpt",
+        model=model,
+    )
+
+
+def normalize_chatgpt_system_messages(
+    messages: Any, model: str = "unknown"
+) -> list[Any]:
+    """Copy messages and flatten text-block system content to strings.
+
+    LiteLLM's common Responses bridge lifts string system content into the
+    top-level ``instructions`` field. Unsupported system blocks fail closed
+    instead of being silently demoted or sent in a provider-invalid shape.
+    """
+    if not isinstance(messages, list):
+        _unsupported_system_content("ChatGPT messages must be a list", model)
+
+    normalized: list[Any] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "system":
+            normalized.append(message)
+            continue
+        content = message.get("content", "")
+        if isinstance(content, str):
+            normalized.append(message)
+            continue
+        if not isinstance(content, list):
+            _unsupported_system_content(
+                "ChatGPT OAuth only supports text system content", model
+            )
+
+        text_parts: list[str] = []
+        for index, raw_block in enumerate(content):
+            try:
+                block = _plain_system_block(raw_block)
+            except TypeError:
+                _unsupported_system_content(
+                    f"ChatGPT OAuth system block {index} must be a text object",
+                    model,
+                )
+            if block.get("type") not in ("text", "input_text"):
+                _unsupported_system_content(
+                    f"ChatGPT OAuth system block {index} is not text", model
+                )
+            text = block.get("text")
+            if not isinstance(text, str):
+                _unsupported_system_content(
+                    f"ChatGPT OAuth system block {index} is missing text", model
+                )
+            text_parts.append(text)
+
+        copied = dict(message)
+        copied["content"] = "\n\n".join(text_parts)
+        normalized.append(copied)
+    return normalized
+
+
+def install_chatgpt_system_block_normalization() -> bool:
+    """Patch the completion-to-Responses bridge only for ChatGPT 1.92.0."""
+    if not PATCH_REQUIRED:
+        return False
+
+    try:
+        from litellm.completion_extras.litellm_responses_transformation.handler import (
+            ResponsesToCompletionBridgeHandler,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "LiteLLM 1.92.0 Responses bridge internals changed; refusing to "
+            "install the ChatGPT system-block compatibility patch"
+        ) from exc
+
+    original = ResponsesToCompletionBridgeHandler.validate_input_kwargs
+    if getattr(original, _SYSTEM_PATCH_MARKER, False):
+        return True
+    if tuple(inspect.signature(original).parameters) != ("self", "kwargs"):
+        raise RuntimeError(
+            "LiteLLM 1.92.0 validate_input_kwargs signature changed; refusing "
+            "to install the ChatGPT system-block compatibility patch"
+        )
+
+    def validate_input_kwargs_with_chatgpt_system_blocks(
+        self: Any, kwargs: dict[str, Any]
+    ) -> Any:
+        validated = original(self, kwargs)
+        if validated.get("custom_llm_provider") == "chatgpt":
+            validated["messages"] = normalize_chatgpt_system_messages(
+                validated["messages"], str(validated.get("model") or "unknown")
+            )
+        return validated
+
+    setattr(
+        validate_input_kwargs_with_chatgpt_system_blocks,
+        _SYSTEM_PATCH_MARKER,
+        True,
+    )
+    ResponsesToCompletionBridgeHandler.validate_input_kwargs = (
+        validate_input_kwargs_with_chatgpt_system_blocks
+    )
+    return True
 
 
 def install_chatgpt_stream_output_recovery() -> bool:
@@ -153,3 +279,4 @@ def install_chatgpt_stream_output_recovery() -> bool:
 
 
 PATCH_ACTIVE = install_chatgpt_stream_output_recovery()
+SYSTEM_PATCH_ACTIVE = install_chatgpt_system_block_normalization()

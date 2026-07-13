@@ -12,9 +12,35 @@ from __future__ import annotations
 import os
 import sys
 
+
+# Both OAuth adapters accept environment variables that override the inference
+# origin.  They are useful to LiteLLM developers, but unsafe in this managed
+# gateway: the adapters attach bearer tokens after resolving these values.  An
+# inherited shell variable must never redirect a subscription token to another
+# host.  Package-owned OAuth routes therefore always use LiteLLM's pinned
+# provider constants; custom OAuth endpoints require a reviewed source change.
+OAUTH_PROVIDER_ENDPOINT_OVERRIDE_ENV = (
+    "CHATGPT_API_BASE",
+    "OPENAI_CHATGPT_API_BASE",
+    "XAI_OAUTH_API_BASE",
+    "XAI_API_BASE",
+)
+
+
+def enforce_official_oauth_provider_endpoints() -> None:
+    """Remove every LiteLLM OAuth inference-origin override."""
+    for name in OAUTH_PROVIDER_ENDPOINT_OVERRIDE_ENV:
+        os.environ.pop(name, None)
+
+
+# Scrub before importing any LiteLLM-backed hook, then repeat in ``main`` in
+# case an embedding caller mutates the environment after importing this module.
+enforce_official_oauth_provider_endpoints()
+
 from ai_litellm_callbacks.chatgpt_stream_compat import (
     PATCH_ACTIVE as CHATGPT_STREAM_PATCH_ACTIVE,
     PATCH_REQUIRED as CHATGPT_STREAM_PATCH_REQUIRED,
+    SYSTEM_PATCH_ACTIVE as CHATGPT_SYSTEM_PATCH_ACTIVE,
 )
 from ai_litellm_callbacks.oauth_guard import PATCH_ACTIVE
 
@@ -59,6 +85,7 @@ def _enforce_single_process(argv: list[str]) -> None:
 
 
 def main() -> object:
+    enforce_official_oauth_provider_endpoints()
     _enforce_single_process(sys.argv[1:])
     if PATCH_ACTIVE is not True:
         raise RuntimeError(
@@ -67,6 +94,11 @@ def main() -> object:
     if CHATGPT_STREAM_PATCH_REQUIRED and CHATGPT_STREAM_PATCH_ACTIVE is not True:
         raise RuntimeError(
             "claude-litellm ChatGPT stream compatibility hook is inactive; "
+            "refusing to start LiteLLM 1.92.0"
+        )
+    if CHATGPT_STREAM_PATCH_REQUIRED and CHATGPT_SYSTEM_PATCH_ACTIVE is not True:
+        raise RuntimeError(
+            "claude-litellm ChatGPT system-block compatibility hook is inactive; "
             "refusing to start LiteLLM 1.92.0"
         )
 

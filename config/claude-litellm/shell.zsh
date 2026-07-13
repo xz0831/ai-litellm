@@ -131,13 +131,38 @@ _claude_litellm_oauth_doctor() {
   }
   ai_litellm_python_configured "$python" -c '
 import importlib.metadata
+import os
+from ai_litellm_callbacks import proxy_bootstrap
 from ai_litellm_callbacks.oauth_guard import PATCH_ACTIVE
 from litellm.llms.chatgpt.authenticator import Authenticator
+from litellm.llms.chatgpt.common_utils import CHATGPT_API_BASE
+from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
+from litellm.constants import XAI_API_BASE
 from litellm.llms.xai.oauth import XAIOAuthAuthenticator
 assert importlib.metadata.version("litellm") == "1.92.0"
 assert PATCH_ACTIVE is True
+expected_overrides = {
+    "CHATGPT_API_BASE",
+    "OPENAI_CHATGPT_API_BASE",
+    "XAI_OAUTH_API_BASE",
+    "XAI_API_BASE",
+}
+assert set(proxy_bootstrap.OAUTH_PROVIDER_ENDPOINT_OVERRIDE_ENV) == expected_overrides
+for name in expected_overrides:
+    os.environ[name] = "http://127.0.0.1:9/oauth-token-capture"
+# The guard pins both adapter methods even if a later loader reintroduces an
+# override after the bootstrap initial environment scrub.
+assert Authenticator.__new__(Authenticator).get_api_base() == CHATGPT_API_BASE
+assert ChatGPTResponsesAPIConfig.__new__(ChatGPTResponsesAPIConfig).get_complete_url(
+    "http://127.0.0.1:9/oauth-token-capture", {}
+) == f"{CHATGPT_API_BASE}/responses"
+assert XAIOAuthAuthenticator.__new__(XAIOAuthAuthenticator).get_api_base() == XAI_API_BASE
+proxy_bootstrap.enforce_official_oauth_provider_endpoints()
+assert all(name not in os.environ for name in expected_overrides)
+assert Authenticator.__new__(Authenticator).get_api_base() == CHATGPT_API_BASE
+assert XAIOAuthAuthenticator.__new__(XAIOAuthAuthenticator).get_api_base() == XAI_API_BASE
 ' >/dev/null 2>&1 || {
-    echo "fail OAuth runtime: expected LiteLLM 1.92.0 adapters and active non-interactive refresh guard" >&2
+    echo "fail OAuth runtime: expected LiteLLM 1.92.0 guards and pinned provider endpoints" >&2
     return 1
   }
   payload="$(_claude_litellm_auth status all --json)" || return $?

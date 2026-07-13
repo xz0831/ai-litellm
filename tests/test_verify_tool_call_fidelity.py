@@ -25,7 +25,18 @@ class LiveQualificationTests(unittest.TestCase):
             {
                 "type": "content_block_delta",
                 "delta": {"type": "text_delta", "text": "Route ready."},
-            }
+            },
+            {"type": "message_stop"},
+        ]
+        system_events = [
+            {
+                "type": "content_block_delta",
+                "delta": {
+                    "type": "text_delta",
+                    "text": "SYSTEM_BLOCK_ALPHA SYSTEM_BLOCK_BETA",
+                },
+            },
+            {"type": "message_stop"},
         ]
         tool_events = [
             {
@@ -45,6 +56,7 @@ class LiveQualificationTests(unittest.TestCase):
                 "type": "content_block_delta",
                 "delta": {"type": "input_json_delta", "partial_json": 'Seoul"}'},
             },
+            {"type": "message_stop"},
         ]
         forced_response = {
             "stop_reason": "tool_use",
@@ -75,7 +87,11 @@ class LiveQualificationTests(unittest.TestCase):
             mock.patch.object(
                 FIDELITY,
                 "post_messages_stream",
-                side_effect=[(200, text_events), (200, tool_events)],
+                side_effect=[
+                    (200, text_events),
+                    (200, system_events),
+                    (200, tool_events),
+                ],
             ) as stream_post,
             mock.patch.object(
                 FIDELITY,
@@ -93,6 +109,7 @@ class LiveQualificationTests(unittest.TestCase):
 
         self.assertTrue(result["all_gates_pass"])
         self.assertTrue(result["text_sse"])
+        self.assertTrue(result["claude_system_block_instructions"])
         self.assertTrue(result["forced_structured_tool"])
         self.assertTrue(result["streaming_input_json_delta"])
         self.assertTrue(result["tool_result_continuation"])
@@ -101,7 +118,13 @@ class LiveQualificationTests(unittest.TestCase):
         for call in (*stream_post.call_args_list, *json_post.call_args_list):
             self.assertGreaterEqual(call.args[2]["max_tokens"], 128)
         self.assertEqual(stream_post.call_args_list[0].args[2]["max_tokens"], 512)
-        self.assertEqual(stream_post.call_args_list[1].args[2]["max_tokens"], 128)
+        self.assertEqual(stream_post.call_args_list[1].args[2]["max_tokens"], 512)
+        self.assertEqual(stream_post.call_args_list[2].args[2]["max_tokens"], 128)
+        system_payload = stream_post.call_args_list[1].args[2]
+        self.assertEqual(len(system_payload["system"]), 2)
+        self.assertEqual(
+            system_payload["system"][0]["cache_control"], {"type": "ephemeral"}
+        )
         self.assertEqual(json_post.call_args_list[0].args[2]["max_tokens"], 128)
         self.assertEqual(json_post.call_args_list[1].args[2]["max_tokens"], 512)
         effort_payload = json_post.call_args_list[2].args[2]
@@ -116,13 +139,44 @@ class LiveQualificationTests(unittest.TestCase):
             dynamic_id,
         )
 
+    def test_stream_completion_rejects_error_or_truncation(self) -> None:
+        complete = [
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "OK"}},
+            {"type": "message_stop"},
+        ]
+        errored = [
+            complete[0],
+            {"type": "error", "error": {"type": "overloaded_error"}},
+            {"type": "message_stop"},
+        ]
+        after_stop = [
+            *complete,
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "late"}},
+        ]
+        self.assertTrue(FIDELITY._stream_completed_cleanly(complete))
+        self.assertFalse(FIDELITY._stream_completed_cleanly(errored))
+        self.assertFalse(FIDELITY._stream_completed_cleanly(complete[:-1]))
+        self.assertFalse(FIDELITY._stream_completed_cleanly(after_stop))
+
+    def test_system_gate_requires_both_markers(self) -> None:
+        self.assertTrue(
+            FIDELITY._system_block_markers_present(
+                "SYSTEM_BLOCK_ALPHA SYSTEM_BLOCK_BETA"
+            )
+        )
+        self.assertFalse(
+            FIDELITY._system_block_markers_present("SYSTEM_BLOCK_ALPHA")
+        )
+
     def test_live_gate_failure_changes_process_verdict(self) -> None:
         failed = {
             "model": "broken-model",
             "text_sse": True,
+            "claude_system_block_instructions": False,
             "forced_structured_tool": True,
-            "streaming_input_json_delta": False,
+            "streaming_input_json_delta": True,
             "tool_result_continuation": True,
+            "claude_adaptive_effort_policy": True,
         }
         argv = [
             str(SCRIPT),

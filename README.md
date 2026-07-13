@@ -112,8 +112,9 @@ claude-litellm auth logout chatgpt
 
 Offline CI validates adapter imports, route boot, token paths, refresh behavior,
 redaction and Anthropic/tool translation. It deliberately does not authorize a
-real subscription account. After login, run a live tool-call probe before
-treating either OAuth route as account-level end-to-end qualified.
+real subscription account. After login, run live qualification; its six gates
+include Claude-style system blocks, text streaming, tool calls, continuation,
+and adaptive effort before treating an OAuth route as end-to-end qualified.
 
 LiteLLM 1.92.0 has an upstream ChatGPT streaming defect where a valid
 `response.output_item.done` can be lost when `response.completed.output` is
@@ -258,7 +259,7 @@ with no validated selectable slot, the wrapper warns and the gateway removes
 only the effort selection while retaining adaptive/provider-default reasoning.
 On a route with one allowed effort, the incoming shared/default effort is
 normalized to that sole value. Qualification includes this request shape as a
-fifth gate; a successful gate proves policy-compatible transport, not that the
+sixth gate; a successful gate proves policy-compatible transport, not that the
 provider changed its exploration depth.
 
 For OpenRouter on the pinned LiteLLM 1.92 transport, raw `xhigh`/`max` catalog

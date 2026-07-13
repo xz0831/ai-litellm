@@ -19,9 +19,10 @@ fabric's translation layer from any real model's competence.
 Exit 0 iff every critical case passes. `--json` prints a machine-readable verdict.
 `--live-model NAME` additionally qualifies NAME through the already-running
 deployed proxy at 127.0.0.1:4000 (BILLABLE for cloud routes). The live suite has
-five gates: text SSE, a forced structured tool call, streamed tool-argument JSON,
-a tool_result continuation, and Claude Code's adaptive-thinking/effort request
-shape. `--live-only` skips the deterministic fixture.
+six gates: text SSE, Claude-style system text blocks, a forced structured tool
+call, streamed tool-argument JSON, a tool_result continuation, and Claude Code's
+adaptive-thinking/effort request shape. `--live-only` skips the deterministic
+fixture.
 
 For live requests, LITELLM_MASTER_KEY takes precedence over the macOS Keychain.
 """
@@ -270,6 +271,7 @@ WEATHER_TOOL = {
 
 LIVE_MAX_TOKENS = 128
 LIVE_RESPONSE_MAX_TOKENS = 512
+SYSTEM_BLOCK_MARKERS = ("SYSTEM_BLOCK_ALPHA", "SYSTEM_BLOCK_BETA")
 
 
 def _tool_use_block(content: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -291,6 +293,21 @@ def _streamed_text(events: list[dict[str, Any]]) -> str:
         and event.get("delta", {}).get("type") == "text_delta"
     ]
     return "".join(fragment for fragment in fragments if isinstance(fragment, str))
+
+
+def _stream_completed_cleanly(events: list[dict[str, Any]]) -> bool:
+    """Require the Anthropic terminal event and reject in-band SSE errors."""
+    event_types = [event.get("type") for event in events if isinstance(event, dict)]
+    return (
+        bool(event_types)
+        and event_types[-1] == "message_stop"
+        and "error" not in event_types
+        and "invalid_sse_json" not in event_types
+    )
+
+
+def _system_block_markers_present(text: str) -> bool:
+    return all(marker in text for marker in SYSTEM_BLOCK_MARKERS)
 
 
 def _streamed_tool(
@@ -489,9 +506,48 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
         }],
     })
     streamed_text = _streamed_text(text_events)
-    result["text_sse"] = bool(text_status == 200 and streamed_text.strip())
+    result["text_sse"] = bool(
+        text_status == 200
+        and _stream_completed_cleanly(text_events)
+        and streamed_text.strip()
+    )
     result["text_sse_status"] = text_status
     result["text_sse_chars"] = len(streamed_text)
+    result["text_sse_complete"] = _stream_completed_cleanly(text_events)
+
+    # Gate 2: Claude Code sends its system prompt as Anthropic text blocks, not
+    # a plain string. ChatGPT's Responses backend rejects role=system input
+    # items, so adapters must preserve both blocks as top-level instructions.
+    system_status, system_events = post_messages_stream(base, master_key, {
+        "model": model,
+        "max_tokens": LIVE_RESPONSE_MAX_TOKENS,
+        "system": [
+            {
+                "type": "text",
+                "text": "Include the marker SYSTEM_BLOCK_ALPHA in the final reply.",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": "Also include the marker SYSTEM_BLOCK_BETA in the final reply.",
+            },
+        ],
+        "messages": [{
+            "role": "user",
+            "content": "Apply both system instructions and reply with only their markers.",
+        }],
+    })
+    system_text = _streamed_text(system_events)
+    result["claude_system_block_instructions"] = bool(
+        system_status == 200
+        and _stream_completed_cleanly(system_events)
+        and _system_block_markers_present(system_text)
+    )
+    result["claude_system_block_instructions_status"] = system_status
+    result["claude_system_block_instructions_chars"] = len(system_text)
+    result["claude_system_block_instructions_complete"] = (
+        _stream_completed_cleanly(system_events)
+    )
 
     tool_prompt = (
         "Call get_weather exactly once for Seoul. "
@@ -505,7 +561,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
         "messages": [{"role": "user", "content": tool_prompt}],
     }
 
-    # Gate 2: a forced tool must emerge as a native Anthropic tool_use block.
+    # Gate 3: a forced tool must emerge as a native Anthropic tool_use block.
     tool_status, tool_resp = post_messages(base, master_key, forced_payload)
     tool_block = _tool_use_block(tool_resp.get("content", [])) if tool_status == 200 else None
     tool_id = tool_block.get("id") if tool_block else None
@@ -520,7 +576,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     )
     result["forced_structured_tool_status"] = tool_status
 
-    # Gate 3: streaming tool arguments must use input_json_delta and concatenate
+    # Gate 4: streaming tool arguments must use input_json_delta and concatenate
     # into valid JSON. Live providers generate arbitrary call IDs; only the
     # deterministic mock fixture is required to emit call_stream_1.
     stream_status, tool_events = post_messages_stream(base, master_key, forced_payload)
@@ -528,6 +584,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     stream_id = stream_start.get("id") if stream_start else None
     result["streaming_input_json_delta"] = bool(
         stream_status == 200
+        and _stream_completed_cleanly(tool_events)
         and stream_start is not None
         and isinstance(stream_id, str)
         and bool(stream_id.strip())
@@ -537,8 +594,11 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     )
     result["streaming_input_json_delta_status"] = stream_status
     result["streaming_input_json_valid"] = isinstance(stream_input, dict)
+    result["streaming_input_json_delta_complete"] = _stream_completed_cleanly(
+        tool_events
+    )
 
-    # Gate 4: use the actual model-generated ID and input in the follow-up. This
+    # Gate 5: use the actual model-generated ID and input in the follow-up. This
     # catches adapters that can emit a call but cannot replay tool_result history.
     continuation_status = 0
     continuation_text = ""
@@ -572,7 +632,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     )
     result["tool_result_continuation_status"] = continuation_status
 
-    # Gate 5 mirrors Claude Code 2.1.207's real default request shape. The
+    # Gate 6 mirrors Claude Code 2.1.207's real default request shape. The
     # gateway must either forward a validated selectable effort, normalize a
     # single-level route (GLM -> high), or remove the effort while preserving
     # adaptive/provider-default reasoning for routes with no selectable slot.
@@ -597,6 +657,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
 
     gates = (
         "text_sse",
+        "claude_system_block_instructions",
         "forced_structured_tool",
         "streaming_input_json_delta",
         "tool_result_continuation",
@@ -792,6 +853,7 @@ def main() -> int:
         live = verdict["live"]
         critical.extend([
             live.get("text_sse", False),
+            live.get("claude_system_block_instructions", False),
             live.get("forced_structured_tool", False),
             live.get("streaming_input_json_delta", False),
             live.get("tool_result_continuation", False),
@@ -818,6 +880,7 @@ def main() -> int:
             live = verdict["live"]
             print(f"Live /v1/messages qualification ({live['model']}):")
             print(f"  text SSE ................................... {'PASS' if live['text_sse'] else 'FAIL'} (status {live.get('text_sse_status')})")
+            print(f"  Claude system text blocks -> instructions .. {'PASS' if live['claude_system_block_instructions'] else 'FAIL'} (status {live.get('claude_system_block_instructions_status')})")
             print(f"  forced structured tool ..................... {'PASS' if live['forced_structured_tool'] else 'FAIL'} (status {live.get('forced_structured_tool_status')})")
             print(f"  streaming input_json_delta ................. {'PASS' if live['streaming_input_json_delta'] else 'FAIL'} (status {live.get('streaming_input_json_delta_status')})")
             print(f"  tool_result continuation ................... {'PASS' if live['tool_result_continuation'] else 'FAIL'} (status {live.get('tool_result_continuation_status')})")

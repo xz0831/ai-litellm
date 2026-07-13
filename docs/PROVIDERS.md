@@ -64,7 +64,11 @@ The managed proxy installs the non-interactive OAuth guard before LiteLLM
 initialization. While logged out, the ChatGPT deployment fails closed and is
 absent from the live router rather than opening a device flow. Explicit
 login/logout restarts a running managed proxy so that deployment state follows
-credential state.
+credential state. The managed bootstrap also removes `CHATGPT_API_BASE` and
+`OPENAI_CHATGPT_API_BASE` before LiteLLM imports or sends a request. OAuth bearer
+tokens are also pinned in the guarded adapter method to LiteLLM's packaged
+ChatGPT backend origin; custom ChatGPT OAuth inference origins are not supported
+as ambient configuration.
 
 The deterministic suite does not perform a real ChatGPT subscription login or
 provider request. Its generic GPT translation mock is not proof of the
@@ -74,6 +78,13 @@ after the user authorizes the account.
 LiteLLM 1.92.0 also drops streamed output items when ChatGPT closes with an
 empty `response.completed.output`. The package carries a version-gated recovery
 shim for this known upstream defect and an offline text/tool regression test.
+It also mishandles Claude Code's list-valued Anthropic system prompt by leaving
+it as a Responses `role=system` input, which the ChatGPT Codex backend rejects.
+The same exact-version shim flattens ChatGPT text blocks into top-level
+`instructions`; it preserves text order, deliberately drops Anthropic-only
+`cache_control` hints, and fails locally on a future non-text system block.
+Live qualification includes this real Claude system-block shape, so a minimal
+user-only request can no longer produce a false qualification.
 
 ## Grok OAuth
 
@@ -87,6 +98,9 @@ An API-key route can coexist as a stable fallback, but it must reference a
 route-specific variable such as `XAI_FALLBACK_API_KEY`, not the provider-global
 `XAI_API_KEY`: LiteLLM gives that global key precedence even on an OAuth-marked
 route. Never attach an API key to the OAuth route itself.
+The managed bootstrap removes `XAI_OAUTH_API_BASE` and `XAI_API_BASE` before
+LiteLLM imports or sends an OAuth request, and the guarded adapter method returns
+the packaged xAI API origin even if a later loader reintroduces either variable.
 Offline tests validate xAI OAuth adapter selection and safe refresh behavior,
 but a live tool-call probe is still required after account authorization.
 The 500K input window comes from xAI's Grok 4.5 model catalog. xAI does not
@@ -137,7 +151,7 @@ intent and applies the selected route contract:
 - With multiple allowed levels, validated values are preserved and unsupported
   values are rejected.
 
-The fifth live qualification gate sends the same adaptive-thinking plus
+The sixth live qualification gate sends the same adaptive-thinking plus
 `output_config.effort` shape and requires a non-empty successful response under
 that route policy. It proves that the gateway handled the shape consistently;
 it does not prove that an untraceable upstream honored a particular depth.

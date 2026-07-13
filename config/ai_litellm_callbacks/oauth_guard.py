@@ -9,6 +9,7 @@ that fallback with a fast authentication error.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import stat
@@ -176,18 +177,56 @@ def install_noninteractive_chatgpt_auth() -> bool:
     try:
         from litellm.llms.chatgpt.authenticator import Authenticator
         from litellm.llms.chatgpt.common_utils import (
+            CHATGPT_API_BASE,
             GetAccessTokenError,
             RefreshAccessTokenError,
+        )
+        from litellm.llms.chatgpt.responses.transformation import (
+            ChatGPTResponsesAPIConfig,
         )
     except Exception as exc:
         raise RuntimeError(
             "LiteLLM ChatGPT OAuth internals changed; refusing to start without the non-interactive refresh guard"
         ) from exc
 
-    if getattr(Authenticator, "_claude_litellm_noninteractive", False):
+    auth_patched = getattr(Authenticator, "_claude_litellm_noninteractive", False)
+    auth_endpoint_patched = getattr(
+        Authenticator.get_api_base,
+        "_claude_litellm_official_endpoint",
+        False,
+    )
+    responses_patched = getattr(
+        ChatGPTResponsesAPIConfig.get_complete_url,
+        "_claude_litellm_official_endpoint",
+        False,
+    )
+    if auth_patched and auth_endpoint_patched and responses_patched:
         return True
 
+    if tuple(inspect.signature(ChatGPTResponsesAPIConfig.get_complete_url).parameters) != (
+        "self",
+        "api_base",
+        "litellm_params",
+    ):
+        raise RuntimeError(
+            "LiteLLM ChatGPT Responses URL contract changed; refusing to start "
+            "without an official-origin pin"
+        )
+
     refresh_lock = threading.Lock()
+
+    def get_official_api_base(self: Any) -> str:
+        # The bearer token is valid only for LiteLLM's packaged ChatGPT Codex
+        # backend. Never honor an environment value that can redirect it.
+        return CHATGPT_API_BASE
+
+    def get_official_complete_url(
+        self: Any, api_base: str | None, litellm_params: dict[str, Any]
+    ) -> str:
+        # An explicit per-request ``api_base`` otherwise wins after the OAuth
+        # bearer token has been selected. Subscription routes never permit that
+        # request-level endpoint escape hatch.
+        return f"{CHATGPT_API_BASE.rstrip('/')}/responses"
 
     def ensure_token_dir_private(self: Any) -> None:
         _validate_parent_chain(
@@ -261,8 +300,12 @@ def install_noninteractive_chatgpt_auth() -> bool:
     Authenticator._ensure_token_dir = ensure_token_dir_private
     Authenticator._read_auth_file = read_auth_file_private
     Authenticator._write_auth_file = write_auth_file_atomic
+    get_official_api_base._claude_litellm_official_endpoint = True  # type: ignore[attr-defined]
+    Authenticator.get_api_base = get_official_api_base
     Authenticator.get_access_token = get_access_token_noninteractive
     Authenticator._claude_litellm_noninteractive = True
+    get_official_complete_url._claude_litellm_official_endpoint = True  # type: ignore[attr-defined]
+    ChatGPTResponsesAPIConfig.get_complete_url = get_official_complete_url
     return True
 
 
@@ -278,15 +321,27 @@ def install_redacted_xai_auth() -> bool:
             XAIOAuthError,
             XAIOAuthLoginRequiredError,
         )
+        from litellm.constants import XAI_API_BASE
     except Exception as exc:
         raise RuntimeError(
             "LiteLLM xAI OAuth internals changed; refusing to start without the refresh redaction guard"
         ) from exc
 
-    if getattr(XAIOAuthAuthenticator, "_claude_litellm_redacted", False):
+    auth_patched = getattr(XAIOAuthAuthenticator, "_claude_litellm_redacted", False)
+    endpoint_patched = getattr(
+        XAIOAuthAuthenticator.get_api_base,
+        "_claude_litellm_official_endpoint",
+        False,
+    )
+    if auth_patched and endpoint_patched:
         return True
 
     original_get_access_token = XAIOAuthAuthenticator.get_access_token
+
+    def get_official_api_base(self: Any) -> str:
+        # ``use_xai_oauth`` must always send its bearer token to the packaged
+        # xAI API origin, irrespective of ambient endpoint overrides.
+        return XAI_API_BASE
 
     def ensure_token_dir_private(self: Any) -> None:
         _validate_parent_chain(
@@ -320,6 +375,8 @@ def install_redacted_xai_auth() -> bool:
     XAIOAuthAuthenticator._ensure_token_dir = ensure_token_dir_private
     XAIOAuthAuthenticator._read_auth_file = read_auth_file_private
     XAIOAuthAuthenticator._write_auth_file = write_auth_file_atomic
+    get_official_api_base._claude_litellm_official_endpoint = True  # type: ignore[attr-defined]
+    XAIOAuthAuthenticator.get_api_base = get_official_api_base
     XAIOAuthAuthenticator.get_access_token = get_access_token_redacted
     XAIOAuthAuthenticator._claude_litellm_redacted = True
     return True

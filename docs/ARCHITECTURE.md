@@ -75,7 +75,12 @@ omitted from the live router while logged out; login/logout restarts an already
 running managed proxy to load or unload the route. ChatGPT
 OAuth is marked experimental because LiteLLM implements the Codex subscription
 backend, while OpenAI does not document that backend as a general third-party
-gateway contract. xAI OAuth uses LiteLLM's first-party xAI OAuth adapter.
+gateway contract. xAI OAuth uses LiteLLM's first-party xAI OAuth adapter. The
+launcher and Python bootstrap both remove LiteLLM's ChatGPT/xAI inference-base
+environment overrides before provider code runs. The OAuth guard also pins both
+adapter methods to the packaged provider constants, covering environment values
+introduced by a later loader. OAuth routes consequently never trust ambient
+variables for an origin that will receive a bearer token.
 
 The managed proxy is intentionally single-process. `NUM_WORKERS` is pinned to
 `1`, and reload, gunicorn, hypercorn, Granian and multi-worker modes are rejected
