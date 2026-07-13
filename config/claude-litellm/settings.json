@@ -1,21 +1,5 @@
 {
-  "mode": "proxy",
   "default": "opus",
-  "directDefault": "opus",
-  "proxyDefault": "opus",
-  "directAliases": {
-    "fable": "moonshotai/kimi-k2.7-code",
-    "opus": "z-ai/glm-5.2",
-    "sonnet": "xiaomi/mimo-v2.5",
-    "haiku": "xiaomi/mimo-v2.5"
-  },
-  "directDisplayNames": {
-    "fable": "Kimi-K2.7-Code (openrouter)",
-    "opus": "GLM-5.2 (openrouter)",
-    "sonnet": "Mimo-V2.5 (openrouter)",
-    "haiku": "Mimo-V2.5 (openrouter)"
-  },
-  "subagentModel": "z-ai/glm-5.2",
   "aliases": {
     "fable": "Kimi-K2.7-Code-openrouter",
     "opus": "GLM-5.2-openrouter",

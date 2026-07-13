@@ -24,6 +24,7 @@
         "max_input_tokens": 8192,
         "max_output_tokens": 4096,
         "supports_reasoning": false,
+        "x_reasoning_efforts": [],
         "x_input_confidence": "owned-policy",
         "x_input_source": "quality-conservative-local-policy; runtime-specific",
         "x_output_confidence": "owned-policy",

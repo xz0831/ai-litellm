@@ -13,6 +13,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Set up production Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify production Python executable
+        run: python3.11 --version
+
       - name: Install jq and ripgrep
         run: brew install jq ripgrep
 
@@ -35,12 +43,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install LiteLLM
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'litellm[proxy]==1.91.0' prisma
+          python -m pip install 'litellm[proxy]==1.92.0' prisma
 
       - name: Verify LiteLLM token clamp behavior
         run: |
@@ -77,12 +85,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install LiteLLM
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'litellm[proxy]==1.91.0' prisma
+          python -m pip install 'litellm[proxy]==1.92.0' prisma
 
       - name: Verify tool-call translation fidelity
         run: |
@@ -97,5 +105,27 @@ jobs:
           assert p["multiturn_tool_result_roundtrip"] is True
           assert p["multiturn_history_translated"] is True
           assert p["thinking_plus_tooluse_resume_ok"] is True
+          assert p["thinking_signature_forwarded"] is True
+          assert p["streaming_tool_arguments_roundtrip"] is True
+          assert p["output_config_effort_forwarded"] is True
+          assert p["drop_params_does_not_fake_effort_support"] is True
           PY
 
+  oauth-adapters:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned LiteLLM OAuth adapters
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'litellm[proxy]==1.92.0' prisma PyYAML
+
+      - name: Verify OAuth routes, storage, and output redaction without network
+        run: ./scripts/verify_oauth_adapters.py

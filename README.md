@@ -1,414 +1,178 @@
-# ai-litellm
+# claude-litellm
 
-Portable harness fabric for local AI agent CLIs.
+Run Claude Code with OpenRouter, local oMLX models, ChatGPT OAuth, Grok OAuth,
+and other LiteLLM providers through one local gateway.
 
-(The installed package directory, the `AI_LITELLM_HOME` env, and the
-`__AI_LITELLM_HOME__` render token are all unified to `ai-litellm`; only the
-internal `config/ai-litellm/` layout and `ai_litellm_*` function names are
-unchanged.)
+```text
+Claude Code -> localhost LiteLLM -> selected provider/model
+```
 
-This repository manages the wrapper layer around local agent CLIs:
-
-- `ai-litellm`: shared proxy lifecycle, routing, context/reasoning doctors
-- `claude-litellm`: Claude Code on non-Anthropic models — LiteLLM proxy by default (OpenRouter + local oMLX routes), with an OpenRouter Anthropic-compatible direct mode (`--direct`)
-- `codex-litellm`: Codex CLI through the shared LiteLLM proxy
-
-It shares the user-scope environment with native harnesses while keeping
-session state isolated per variant:
-
-- shared by reference (symlinks from the fabric Claude config dir into
-  `~/.claude`): `settings.json`, `settings.local.json`, `plugins`, `skills`,
-  `keybindings.json`, `CLAUDE.md`
-- isolated per variant: transcripts (`projects/`), auto-memory, prompt
-  history, todos, credentials, `.claude.json` identity — cross-backend
-  `--resume`/`--continue` and memory pollution stay structurally impossible
-- backend routing travels only as per-invocation process env plus a per-mode
-  `--settings` overlay; launch refuses to start if the shared settings env
-  block carries backend-routing keys (`ANTHROPIC_BASE_URL`,
-  `ANTHROPIC_AUTH_TOKEN`/`API_KEY`, model/tier pin envs, `OPENROUTER_*`,
-  `LITELLM_*`) — benign keys like telemetry/OTel settings are not blocked
-- the fabric itself still never writes into `~/.claude`; writes through the
-  shared links are performed by Claude Code itself (permission decisions,
-  plugin state) exactly as a native session would
-- no writes to `~/.codex` (codex keeps a fully isolated `CODEX_HOME`;
-  see the session-boundary decision log in the architecture guide)
-- no replacement of `claude` or `codex`
-- no API keys in git
-
-The installed wrapper layer is one package directory plus thin global command
-shims:
-
-- package: `~/.local/share/ai-litellm`
-- commands: `~/.local/bin/*-litellm`
-
-Downloading the repository does not automatically create global commands. Run
-`./scripts/install.zsh` once after clone/download; the installer creates shims
-that work from any directory.
-
-## What Git Owns
-
-Tracked source:
-
-- `bin/*`: wrapper commands
-- `config/litellm_config.yaml`: LiteLLM model registry and model token limits
-- `config/ai-litellm/lib.zsh`: shared library
-- `config/ai-litellm/settings.json`: shared proxy/runtime settings
-- `config/ai-litellm/harnesses/*.json`: harness descriptors
-- `config/claude-litellm/*`: Claude direct/proxy adapter settings/helper
-- `config/codex-litellm/*`: Codex LiteLLM adapter settings/helper
-- `docs/AI_AGENT_LITELLM_ARCHITECTURE.md`: maintainer architecture guide
-- `docs/DESIGN_RATIONALE.md`: why every non-obvious decision is the way it is
-  (rationale, rejected alternatives, standing counter-arguments, honest unknowns)
-- `docs/APPLYING_MODELS_TO_HARNESSES.md`: practitioner playbook — given a model
-  (cloud/OpenRouter or local/oMLX), how to apply it to Claude Code / Codex with
-  the context & token budgeting right, with worked examples (Kimi-K2.7-Code,
-  GLM-5.2, Mimo-V2.5, local Qwen3.6)
-- `scripts/install.zsh`: installer for another Mac
-- `scripts/uninstall.zsh`: package/shim remover
-
-Installed package/runtime state:
-
-- `~/.local/share/ai-litellm/config`: rendered wrapper config
-- `~/.local/share/ai-litellm/bin`: installed wrapper executables
-- `~/.local/share/ai-litellm/docs`: installed maintainer guide
-- `~/.local/share/ai-litellm/scripts`: installed package tools, including
-  uninstall
-- `~/.local/share/ai-litellm/state`: proxy logs, pid files, config
-  hashes, harness sessions, sqlite databases, caches, generated configs, local
-  private env file
-- `~/.local/bin`: global shims that point into the package
-
-Still not tracked or installed:
-
-- provider API keys
-- local model weights, including oMLX models under `~/.omlx/models`
+This project wraps Claude Code only. It does not replace native `claude`, modify
+native `~/.claude`, or wrap Codex. Removing the Codex compatibility layer keeps
+the product on one stable protocol: Anthropic Messages into LiteLLM.
 
 ## Install
 
-Prerequisites on the target Mac:
-
-- zsh, node, ruby, jq, curl, python3, perl, rg
-- `litellm`
-- `~/.local/bin` on `PATH`
-
-Harness CLIs are optional. Install native `claude` only if using
-`claude-litellm` and native `codex` only if using `codex-litellm`. A
-Claude-only machine can install the package without Codex.
-
-Preview:
+Requirements: macOS, Claude Code, Python 3.11.x, `jq`, `node`, `ruby`,
+`ripgrep`, `perl`, and `curl`.
 
 ```zsh
-./scripts/install.zsh --dry-run
-```
-
-Install:
-
-```zsh
+git clone https://github.com/xz0831/claude-litellm.git
+cd claude-litellm
 ./scripts/install.zsh
 ```
 
-The installer preflights shared dependencies, writes only the LiteLLM wrapper
-layer, and creates a local LiteLLM master key if one is not already available:
-
-- `~/.local/share/ai-litellm/config`
-- `~/.local/share/ai-litellm/bin`
-- `~/.local/share/ai-litellm/docs`
-- `~/.local/share/ai-litellm/scripts`
-- `~/.local/share/ai-litellm/state`
-- `~/.local/bin/ai-litellm`
-- `~/.local/bin/claude-litellm`
-- `~/.local/bin/codex-litellm`
-
-It creates isolated runtime directories but leaves native app directories alone.
-It does not write `~/.claude`, `~/.codex`, or `~/litellm_config.yaml`; the
-Claude shared-environment symlinks are created inside the fabric state dir and
-only point at `~/.claude`.
-
-Uninstall the package/shims:
-
-```zsh
-ai-litellm uninstall
-```
-
-The installed fallback is also self-contained:
-
-```zsh
-~/.local/share/ai-litellm/scripts/uninstall.zsh
-```
-
-If migrating from an older spread-out install, preview legacy cleanup first:
-
-```zsh
-./scripts/uninstall.zsh --legacy --dry-run
-```
-
-## Secrets
-
-Store keys outside git. On macOS, prefer Keychain storage so provider keys do
-not live in the package directory:
-
-```zsh
-ai-litellm key set --keychain openrouter
-ai-litellm key status
-```
-
-You can also set arbitrary provider env keys:
-
-```zsh
-ai-litellm key set --keychain OPENAI_API_KEY
-ai-litellm key set --keychain anthropic
-```
-
-Omit the value and enter it at the hidden prompt. Passing a secret as a command
-argument can leave it in shell history or process inspection output.
-
-For throwaway or non-macOS installs, the package also supports a private env
-file, which is removed with `ai-litellm uninstall`:
-
-```zsh
-ai-litellm key set --env-file openrouter
-```
-
-For additional providers referenced as `os.environ/NAME` in
-`config/litellm_config.yaml`, the default Keychain service is the lowercase
-dash form of the variable name. Example: `OPENAI_API_KEY` uses service
-`openai-api-key`.
-
-## First Run
-
-```zsh
-ai-litellm key set --keychain openrouter
-ai-litellm key status
-ai-litellm sync
-ai-litellm doctor
-```
-
-`ai-litellm doctor` with no arguments runs the full battery (proxy + context +
-reasoning + model-policy) and returns non-zero if any pass fails. Scope to one
-pass with `--proxy`, `--context`, `--reasoning`, `--policy`, or `--runtime
-<name>`. There are no per-group `doctor` verbs anymore (`ai-litellm proxy
-doctor`, `ai-litellm context doctor`, and friends were retired); the
-`--<scope>` flags on the unified command are the only entry point, and each
-one delegates to the same check function the old per-group verb used to call
-directly.
-
-`ai-litellm sync` regenerates derived config and restarts the shared proxy by
-default, which can interrupt active LiteLLM-backed sessions. Use
-`ai-litellm sync --dry-run` to inspect actions first, or `--no-restart` to
-regenerate without bouncing the proxy.
-
-For a one-shot summary of proxy status, Claude tier/model mapping, Codex
-default, key status, and capabilities, run `ai-litellm status` (add `--json`
-for the machine-readable form).
-
-Supported harnesses are optional on each machine. `sync`, `doctor`, and
-metadata commands must skip missing native CLIs cleanly; only launching that
-specific harness requires its native command. `sync` also renders the per-mode
-Claude `--settings` overlays (`overlay-settings.json` and
-`overlay-settings-proxy.json`; both downgrade `permissions.defaultMode` so a
-native `bypassPermissions` never reaches non-Anthropic models on either lane)
-and maintains the shared-environment symlinks.
-
-OpenRouter backend names can be used directly where a model is accepted. The
-wrapper resolves them back to the configured `model_name` without duplicating
-routes in git:
-
-```zsh
-ai-litellm model limits openrouter/z-ai/glm-5.2
-ai-litellm model info openrouter/z-ai/glm-5.2
-```
-
-Codex has no `gpt-*` facades: a raw provider slug resolves to the same real
-`model_name` the LiteLLM registry already uses, and the generated Codex
-catalog is a **mirror of the registry** — every entry in
-`config/ai-litellm/harnesses/codex.json`'s `models.catalogEntries` is a real
-surface name, not a disguise. The same real name can be used in place of the
-model argument in the harness smoke tests below.
-
-The default tiers/routes map to non-Anthropic backends (current as of
-2026-07-04; the source of truth is `config/claude-litellm/settings.json` and
-`config/litellm_config.yaml`):
-
-- Claude Code proxy tiers: `fable`=Kimi-K2.7-Code, `opus`=GLM-5.2,
-  `sonnet`=Mimo-V2.5, `haiku`=local oMLX Qwen3.6-27B. In `--direct` mode
-  `haiku` falls back to Mimo-V2.5 (the local route has no LiteLLM lane).
-- Codex: real names throughout — `Kimi-K2.7-Code-openrouter`,
-  `GLM-5.2-openrouter` (also Codex's default model), `Mimo-V2.5-openrouter`,
-  `Qwen3.6-27B-omlx` — plus `codex-auto-review`, a hidden bundled-catalog slug
-  Codex's `review` subcommand hardcodes a request for (repointed to the
-  Kimi-K2.7-Code backend). `codex-litellm` shortcuts: `kimi`/`glm`/`mimo`/`qwen`.
-
-Then test one harness. Claude Code defaults to the LiteLLM proxy path:
-tier aliases map to the curated non-Anthropic routes (the haiku tier is a
-fully local oMLX model, so the haiku smoke test below is free), and the
-proxy is auto-started on demand.
-
-```zsh
-claude-litellm haiku -p 'Reply with exactly OK' --no-session-persistence --tools ''
-codex-litellm exec --skip-git-repo-check --sandbox read-only 'Reply with exactly OK'
-```
-
-Harness smoke tests against OpenRouter-backed tiers make real provider
-requests and may be billable.
-
-Use `--direct` for the thin OpenRouter Anthropic-compatible path (no local
-proxy; OpenRouter's own model-id vocabulary; `ANTHROPIC_API_KEY` is blanked
-and the OpenRouter key travels as `ANTHROPIC_AUTH_TOKEN`). Local models
-cannot ride this lane — there is no LiteLLM in the path:
-
-```zsh
-claude-litellm --direct sonnet -p 'Reply with exactly OK' --no-session-persistence --tools ''
-claude-litellm Qwen3.6-27B-omlx -p 'Reply with exactly LOCAL_OK' --no-session-persistence --tools ''
-```
-
-## Local Models
-
-The repository tracks local runtime wiring, not model weights. OpenRouter routes
-are curated recommendations, but local oMLX models are machine-specific.
-
-`Qwen3.6-27B-omlx` is the current sample/recommended route (also the `haiku`
-tier target). A Gemma route is no longer a permanent registry entry or tier
-target, but that's a lineup choice, not a capability limit: if this
-computer's oMLX still serves a Gemma model, `ai-litellm sync` still lists it
-as a discovered route — it just won't survive reinstall/discovery on its own
-and nothing points a tier at it. When oMLX is running, `ai-litellm sync` also
-reads `http://127.0.0.1:8000/v1/models` and generates routes for the models
-this computer actually serves, such as:
-
-```zsh
-ai-litellm runtime status omlx
-ai-litellm sync
-ai-litellm model list | grep -- '-omlx'
-```
-
-Generated local routes are named `<ModelId>-<runtime>` (suffix auto-derived
-from the runtime name, lowercase — e.g. `Qwen3.6-27B-4bit-omlx`; an `ollama`
-runtime would yield `-ollama`) and point at the exact runtime model id
-advertised by oMLX. A discovered model is skipped when a registry entry
-already serves the same backend. The actual oMLX installation and files under
-`~/.omlx/models` remain machine-local.
-
-## Token Budget Policy
-
-Model capability and request reservation are separate concepts.
-
-- Capability lives in `config/litellm_config.yaml` under `x-limits` and
-  `model_info`.
-- Harness-specific reservation lives in the harness descriptor when needed.
-
-Some proxy-backed harnesses need explicit output reservation handling because
-they send or infer per-request `max_tokens` values:
-
-- Claude Code proxy fallback: `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
-- Codex LiteLLM: generated catalog `context_window` for OpenRouter-backed
-  slugs is reduced to the safe input budget because Codex does not expose a
-  reliable Responses output cap
-
-For shared-window providers, the effective input budget is:
+The installer creates an isolated runtime pinned to LiteLLM 1.92.0 plus Prisma,
+records source/runtime provenance, and publishes one shim:
 
 ```text
-effective_input = max_input_tokens - output_reservation - tokenizer_headroom
+~/.local/share/claude-litellm
+~/.local/bin/claude-litellm
 ```
 
-Other token-limit issues can still happen, but the failure mode differs:
+Legacy `ai-litellm-fabric` and `ai-litellm` installations are migrated through a
+byte-verified full backup under `~/.local/share/claude-litellm-backups`. Claude
+transcripts/history are preserved; Codex state remains in the backup but is not
+imported into the Claude-only package.
 
-- Codex LiteLLM: generated model catalog/config can drift from `x-limits`.
-- LiteLLM proxy: `enable_pre_call_checks` enforces configured input limits, not
-  every provider-specific reserved-output accounting rule.
+## Use
 
-To re-check gateway-side output clamping against the installed LiteLLM version:
+Launch the configured default tier:
 
 ```zsh
-./scripts/verify_litellm_token_clamp.py
+claude-litellm
 ```
 
-To re-check **tool-call translation fidelity** — that a well-formed tool call
-survives the Anthropic `/v1/messages` ↔ OpenAI round trip without being dropped,
-corrupted, or 400'd (the fabric's responsibility; a model *choosing* the wrong
-tool is not) — run, also after every LiteLLM upgrade:
+Select a Claude tier or a real LiteLLM route:
 
 ```zsh
-./scripts/verify_tool_call_fidelity.py              # mock provider, zero-cost, deterministic
-./scripts/verify_tool_call_fidelity.py --live-model Qwen3.6-27B-omlx   # optional real-backend smoke (BILLABLE for cloud routes)
+claude-litellm fable
+claude-litellm GPT-5.4-chatgpt-oauth
+claude-litellm Grok-4.5-xai-oauth
+claude-litellm Qwen3.6-27B-omlx
 ```
 
-Run this after every LiteLLM upgrade: the clamp findings are
-version-specific, and the doctor only checks configuration presence, not
-behavior.
-
-Current local result with LiteLLM 1.91.0: plain config does not override a
-larger client `max_tokens`; `litellm_settings.modify_params: true` clamps
-`max_tokens` but not `max_completion_tokens`; a custom
-`async_pre_call_deployment_hook` clamps both before the mock provider receives
-the request. The production proxy enables this hook and also rejects prompts
-above the configured estimated-token guardrail before provider dispatch.
-
-Use the doctors as the contract:
+Claude arguments pass through normally:
 
 ```zsh
-ai-litellm model limits
-ai-litellm context matrix
-ai-litellm context observations
-ai-litellm doctor --context
-ai-litellm doctor --proxy
+claude-litellm opus -p 'Review this repository'
 ```
 
-## Machine-readable output
+## OAuth
 
-Read-only commands accept `--json` for scripting:
+OAuth is explicit. A background proxy refreshes existing tokens but fails fast
+instead of starting an interactive login when credentials are missing or
+refresh is no longer possible. A logged-out ChatGPT deployment is omitted from
+the live router; a successful login or logout automatically restarts an already
+running managed proxy so its route set matches the new credential state:
 
 ```zsh
-ai-litellm proxy status --json
-ai-litellm model list --json
-ai-litellm model limits [model] --json
-ai-litellm runtime status --json
-ai-litellm context matrix --json
-ai-litellm reasoning matrix --json
-ai-litellm harness list --json
-ai-litellm harness info <name> --json
-ai-litellm key status --json
+claude-litellm auth login chatgpt
+claude-litellm auth login grok
+claude-litellm auth status
+claude-litellm auth logout chatgpt
 ```
 
-`--json` is additive and formatter-only: it never re-derives state, and
-without it the default text output is byte-identical to before. It is only
-available on read-only commands; unreadable sources emit `{}` or `[]` with
-exit 0. This is a stable scripting contract: `ai-litellm status --json` is
-itself a consumer, composing five of these (`proxy status`, `model list`,
-`runtime status`, `harness list`, `key status`) into one payload
-(`{proxy,harnesses,runtimes,keys,models}`).
+- ChatGPT uses LiteLLM's `chatgpt/*` device-code provider. It is experimental:
+  LiteLLM implements the ChatGPT Codex subscription backend, but OpenAI does not
+  document that backend as a general Claude Code gateway contract. If a stored
+  refresh token becomes invalid, startup fails closed; repair it with
+  `claude-litellm auth login chatgpt --force` (or log out to remove the route).
+- Grok uses LiteLLM's xAI OAuth adapter (`use_xai_oauth: true`) with OIDC/PKCE.
+  It is experimental and account-entitlement dependent: LiteLLM requests
+  `api:access` and sends the token to `api.x.ai`, so a Grok consumer
+  subscription alone does not prove inference access and may return 403.
+- API-key routes remain independent fallbacks. A parallel xAI API-key route must
+  use a route-specific variable such as `XAI_FALLBACK_API_KEY`, because the
+  provider-global `XAI_API_KEY` would override the OAuth-marked route.
 
-## Maintenance Boundary
+Offline CI validates adapter imports, route boot, token paths, refresh behavior,
+redaction and Anthropic/tool translation. It deliberately does not authorize a
+real subscription account. After login, run a live tool-call probe before
+treating either OAuth route as account-level end-to-end qualified.
 
-The fast path for an OpenRouter-backed model is one command:
+OAuth tokens are stored under `~/.local/share/claude-litellm/state/auth` with
+private permissions and are scrubbed from the Claude child environment. This
+reduces accidental propagation; it is not a sandbox against code running as the
+same macOS user.
+
+## Operations
 
 ```zsh
-ai-litellm model add <provider-id> --claude-tier <tier> --codex   # tier: fable|opus|sonnet|haiku
+claude-litellm status
+claude-litellm doctor
+claude-litellm sync
+claude-litellm proxy start
+claude-litellm proxy stop
+claude-litellm proxy restart
+claude-litellm model list
+claude-litellm model limits <route>
+claude-litellm key set --keychain OPENROUTER_API_KEY
+claude-litellm uninstall
 ```
 
-It fetches capabilities from OpenRouter's `/models` catalog and writes a new
-`x-limits` anchor + `model_list` route (steps 1-2 below); the optional flags
-also point a Claude tier alias and append a Codex catalog entry (step 3),
-then it runs `ai-litellm sync` (step 4). `--name <surface>` pins the exact
-`model_name` casing (otherwise it's derived from the provider id);
-`--dry-run` prints the plan without writing anything. Reverse it with:
+`doctor` fails on unsafe overlay permissions, runtime/provenance drift, invalid
+OAuth token permissions, broken proxy policy, or provider-backed context
+overclaims. Provider underclaims remain warnings because they are conservative.
+
+`model add/remove/reasoning`, `sync`, and Claude alias updates change installed
+managed configuration. The manifest records its baseline hashes; a later
+reinstall deliberately refuses before touching the proxy or runtime if those
+files drifted. Merge wanted changes into the source checkout (or manually
+restore the recorded baseline) before upgrading, so an update never silently
+erases custom providers or aliases.
+
+## Included routes
+
+- `Kimi-K2.7-Code-openrouter`
+- `GLM-5.2-openrouter`
+- `Mimo-V2.5-openrouter`
+- `Qwen3.6-27B-omlx`
+- `Qwen3.6-35B-A3B-4bit-omlx`
+- `GPT-5.4-chatgpt-oauth`
+- `Grok-4.5-xai-oauth`
+
+The Claude tier aliases are configured in
+`config/claude-litellm/settings.json`. Any registered real route can also be
+selected directly without pretending it is an Anthropic model.
+
+## Safety
+
+- The generated Claude settings overlay forces `permissions.defaultMode="default"`.
+- Provider secrets are resolved at proxy startup from the package env file or
+  macOS Keychain (a caller's environment is also accepted but discouraged), and
+  are not inherited by tools Claude launches.
+- Context pre-call checks and estimated-input cost guardrails apply to every
+  route. Output clamps apply when the provider accepts token-limit fields.
+  LiteLLM's ChatGPT subscription adapter intentionally strips those fields, so
+  that experimental route relies on GPT-5.4's natural output cap rather than a
+  lower gateway-enforced cap.
+- Project auth status/JSON and guarded refresh errors do not render ChatGPT or
+  Grok OAuth token payloads. Do not enable third-party trace logging around
+  credentials.
+- Native `claude`, `~/.claude`, native `codex`, and `~/.codex` are not modified.
+
+This is a localhost, trusted-user gateway—not an adversarial containment
+boundary. Claude and tools running under the same Unix account can read files
+that account can read, and the client token currently authenticates with the
+LiteLLM master key. Use a separate OS account or container when running
+untrusted models, tools, or repository code.
+
+## Verify
 
 ```zsh
-ai-litellm model remove <surface> [--dry-run]
+./scripts/check.zsh
+./scripts/verify_litellm_token_clamp.py --json
+./scripts/verify_tool_call_fidelity.py --json
 ```
 
-`model remove` refuses a surface still referenced by a Claude tier or Codex
-catalog entry (reassign it first), and refuses discovered/local/functional
-(`codex-auto-review`) slugs outright.
+The CI pin moves only after the Anthropic translation, streaming tools,
+multi-turn reasoning resume, token policy, OAuth configuration, and redaction
+tests pass against the new LiteLLM release.
 
-`model add`/`model remove` only cover OpenRouter-backed surfaces. For
-non-OpenRouter direct providers, local/discovered routes, or a hand edit, use
-the manual procedure they automate:
+Reasoning support does not automatically imply an effort-control slot. The
+wrapper validates model-specific effort levels and refuses unsupported
+`--effort` values instead of silently dropping them.
 
-1. Update `config/litellm_config.yaml`.
-2. Keep one `x-limits` anchor per underlying backend model.
-3. Update harness aliases/descriptors only when the user-facing slot changes.
-4. Run `ai-litellm sync`.
-5. Run the doctor commands.
-
-Do not encode native Codex/Claude product context claims in this wrapper project.
-Native surfaces must be diagnosed separately from LiteLLM surfaces.
+See [architecture](docs/ARCHITECTURE.md), [providers](docs/PROVIDERS.md), and
+[migration](docs/MIGRATION.md) for the maintained design contract.

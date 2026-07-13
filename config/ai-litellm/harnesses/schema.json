@@ -23,8 +23,7 @@
     "adapter": {
       "type": "string",
       "enum": [
-        "claude-code",
-        "codex-cli"
+        "claude-code"
       ]
     },
     "command": {

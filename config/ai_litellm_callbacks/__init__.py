@@ -1,5 +1,5 @@
-"""LiteLLM proxy callbacks for ai-litellm."""
+"""LiteLLM proxy callbacks and OAuth safety hooks for claude-litellm."""
 
-from . import output_clamp
+from . import oauth_guard, output_clamp
 
-__all__ = ["output_clamp"]
+__all__ = ["oauth_guard", "output_clamp"]

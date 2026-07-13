@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -76,6 +77,41 @@ def make_mock_handler(state: MockState) -> type[http.server.BaseHTTPRequestHandl
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_stream(self, model: str) -> None:
+            """Emit a fragmented OpenAI tool call to test streaming reassembly."""
+            chunks = [
+                {
+                    "id": "chatcmpl-stream", "object": "chat.completion.chunk", "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {
+                        "role": "assistant",
+                        "reasoning_content": "I will call get_weather.",
+                        "tool_calls": [{"index": 0, "id": "call_stream_1", "type": "function",
+                                        "function": {"name": "get_weather", "arguments": "{\"city\":\""}}],
+                    }, "finish_reason": None}],
+                },
+                {
+                    "id": "chatcmpl-stream", "object": "chat.completion.chunk", "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": "Seoul\"}"}}],
+                    }, "finish_reason": None}],
+                },
+                {
+                    "id": "chatcmpl-stream", "object": "chat.completion.chunk", "created": 0,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                },
+            ]
+            body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+            encoded = body.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def do_GET(self) -> None:
             # LiteLLM health/model probes
             self._send(200, {"object": "list", "data": [{"id": "mock-tool-model", "object": "model"}]})
@@ -93,6 +129,10 @@ def make_mock_handler(state: MockState) -> type[http.server.BaseHTTPRequestHandl
             has_tool_role = any(isinstance(m, dict) and m.get("role") == "tool" for m in messages)
             tools = body.get("tools") if isinstance(body, dict) else None
             model = body.get("model", "mock-tool-model") if isinstance(body, dict) else "mock-tool-model"
+
+            if tools and body.get("stream") is True:
+                self._send_stream(model)
+                return
 
             if has_tool_role:
                 # The client fed a tool_result back; emit a normal text completion.
@@ -171,6 +211,35 @@ def post_messages(base: str, master_key: str, payload: dict[str, Any], timeout: 
         except Exception:  # noqa: BLE001
             body = {}
         return exc.code, body
+
+
+def post_messages_stream(
+    base: str, master_key: str, payload: dict[str, Any], timeout: float = 60.0,
+) -> tuple[int, list[dict[str, Any]]]:
+    req = urllib.request.Request(
+        f"{base}/v1/messages",
+        data=json.dumps({**payload, "stream": True}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {master_key}",
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            events = []
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                events.append(json.loads(data))
+            return resp.status, events
+    except urllib.error.HTTPError as exc:
+        return exc.code, []
 
 
 WEATHER_TOOL = {
@@ -253,6 +322,84 @@ def run_cases(base: str, master_key: str, mock: MockState | None, model: str) ->
     })
     result["thinking_plus_tooluse_resume_ok"] = bool(status == 200)
     result["thinking_plus_tooluse_status"] = status
+    if mock is not None:
+        last = mock.snapshot()[-1] if mock.snapshot() else {}
+        assistant_messages = [m for m in last.get("messages", [])
+                              if isinstance(m, dict) and m.get("role") == "assistant"]
+        result["thinking_signature_forwarded"] = bool(
+            assistant_messages and "sig_mock_abc" in json.dumps(assistant_messages[-1])
+        )
+
+    # Case 4 — streaming: tool arguments deliberately arrive in two provider
+    # chunks. The Anthropic stream must preserve the id/name and reconstruct a
+    # valid input JSON object rather than dropping or duplicating fragments.
+    status, events = post_messages_stream(base, master_key, {
+        "model": model, "max_tokens": 256, "tools": [WEATHER_TOOL],
+        "messages": [{"role": "user", "content": "Weather in Seoul? Use the tool."}],
+    })
+    starts = [event.get("content_block", {}) for event in events
+              if event.get("type") == "content_block_start"]
+    tool_starts = [block for block in starts if block.get("type") == "tool_use"]
+    argument_fragments = [event.get("delta", {}).get("partial_json", "") for event in events
+                          if event.get("type") == "content_block_delta"
+                          and event.get("delta", {}).get("type") == "input_json_delta"]
+    try:
+        streamed_input = json.loads("".join(argument_fragments))
+    except json.JSONDecodeError:
+        streamed_input = None
+    result["streaming_tool_arguments_roundtrip"] = bool(
+        status == 200 and tool_starts
+        and tool_starts[0].get("id") == "call_stream_1"
+        and tool_starts[0].get("name") == "get_weather"
+        and streamed_input == {"city": "Seoul"}
+    )
+    result["streaming_status"] = status
+
+    # Case 5 — Claude Code sends effort inside Anthropic output_config, often
+    # together with thinking. For OpenAI-compatible providers LiteLLM must turn
+    # that intent into the contracted `reasoning_effort` field. A 200 response
+    # alone is not evidence: drop_params could silently delete the unsupported
+    # field, so the mock must observe the exact upstream value.
+    status, _resp = post_messages(base, master_key, {
+        "model": model,
+        "max_tokens": 2048,
+        "output_config": {"effort": "high"},
+        "thinking": {"type": "adaptive"},
+        "messages": [{"role": "user", "content": "Think carefully, then answer OK."}],
+    })
+    result["effort_status"] = status
+    if mock is not None:
+        upstream = mock.snapshot()[-1] if mock.snapshot() else {}
+        result["effort_upstream_shape"] = {
+            key: upstream.get(key)
+            for key in ("reasoning_effort", "reasoning", "thinking", "output_config")
+            if key in upstream
+        }
+        result["output_config_effort_forwarded"] = bool(
+            status == 200 and (
+                upstream.get("reasoning_effort") == "high"
+                or (upstream.get("reasoning") or {}).get("effort") == "high"
+            )
+        )
+
+        # Case 6 — negative control. For an unknown/non-effort-capable model,
+        # drop_params=true may return HTTP 200 after deleting the effort field.
+        # Record that as a drop, never as evidence that configurable effort is
+        # supported (the same distinction production must make for Kimi routes
+        # that advertise reasoning but not reasoning_effort).
+        dropped_status, _dropped_resp = post_messages(base, master_key, {
+            "model": "mock-no-effort-model",
+            "max_tokens": 2048,
+            "output_config": {"effort": "high"},
+            "thinking": {"type": "adaptive"},
+            "messages": [{"role": "user", "content": "Answer OK."}],
+        })
+        dropped_upstream = mock.snapshot()[-1] if mock.snapshot() else {}
+        result["drop_params_does_not_fake_effort_support"] = bool(
+            dropped_status == 200
+            and "reasoning_effort" not in dropped_upstream
+            and not isinstance(dropped_upstream.get("reasoning"), dict)
+        )
 
     return result
 
@@ -261,7 +408,16 @@ def write_config(tmpdir: Path, mock_port: int, master_key: str) -> Path:
     cfg = f"""model_list:
   - model_name: mock-tool-model
     litellm_params:
-      model: openai/mock-tool-model
+      # A known reasoning-capable model is required for the effort case. With
+      # an unknown model and drop_params=true LiteLLM correctly removes
+      # reasoning_effort, which would make a successful HTTP response a false
+      # capability signal. api_base still points to the offline mock.
+      model: openai/gpt-5.4
+      api_base: http://127.0.0.1:{mock_port}/v1
+      api_key: none
+  - model_name: mock-no-effort-model
+    litellm_params:
+      model: openai/mock-no-effort-model
       api_base: http://127.0.0.1:{mock_port}/v1
       api_key: none
 general_settings:
@@ -315,9 +471,9 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
         mock_server.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
 
     if args.live_model:
-        import shutil
         live_key = master_key
         sec = shutil.which("security")
         if sec:
@@ -336,6 +492,10 @@ def main() -> int:
         verdict["mock"]["multiturn_tool_result_roundtrip"],
         verdict["mock"].get("multiturn_history_translated", False),
         verdict["mock"]["thinking_plus_tooluse_resume_ok"],
+        verdict["mock"].get("thinking_signature_forwarded", False),
+        verdict["mock"]["streaming_tool_arguments_roundtrip"],
+        verdict["mock"].get("output_config_effort_forwarded", False),
+        verdict["mock"].get("drop_params_does_not_fake_effort_support", False),
     ]
     verdict["all_critical_pass"] = all(critical)
 
@@ -349,6 +509,10 @@ def main() -> int:
         print(f"  multi-turn tool_result round-trip .......... {'PASS' if m['multiturn_tool_result_roundtrip'] else 'FAIL'}")
         print(f"  tool_use+tool_result -> OpenAI history ..... {'PASS' if m.get('multiturn_history_translated') else 'FAIL'}")
         print(f"  thinking+tool_use resume (no 400) .......... {'PASS' if m['thinking_plus_tooluse_resume_ok'] else 'FAIL'} (status {m.get('thinking_plus_tooluse_status')})")
+        print(f"  thinking signature forwarded upstream ...... {'PASS' if m.get('thinking_signature_forwarded') else 'FAIL'}")
+        print(f"  streaming tool args reassembled ............ {'PASS' if m['streaming_tool_arguments_roundtrip'] else 'FAIL'} (status {m.get('streaming_status')})")
+        print(f"  output_config.effort -> reasoning_effort ... {'PASS' if m.get('output_config_effort_forwarded') else 'FAIL'} (status {m.get('effort_status')})")
+        print(f"  dropped effort is not capability evidence . {'PASS' if m.get('drop_params_does_not_fake_effort_support') else 'FAIL'}")
         if "live" in verdict:
             print(f"Live backend smoke ({verdict['live']['model']}):")
             print(f"  single-turn tool_use ....................... {'PASS' if verdict['live']['single_turn_tool_use_roundtrip'] else 'FAIL'}")

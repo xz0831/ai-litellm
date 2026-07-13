@@ -13,13 +13,14 @@
 # public token/capability metadata only; never stash secrets or private data here.
 #
 # Provider-backed limits are reconciled from OpenRouter /api/v1/models by
-# `ai-litellm model refresh-capabilities`. Locally capped values must be marked
+# `claude-litellm model refresh-capabilities`. Locally capped values must be marked
 # owned-policy and documented here; do not leave guessed numbers unlabeled.
 x-limits:
   kimi_k27_code: &kimi_k27_code
     max_input_tokens: 262144
-    max_output_tokens: 16384
+    max_output_tokens: 262144
     supports_reasoning: true
+    x_reasoning_efforts: []
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
     x_output_confidence: provider
@@ -28,41 +29,69 @@ x-limits:
     x_reasoning_source: openrouter.supported_parameters
   glm52: &glm52
     max_input_tokens: 1048576
-    max_output_tokens: 128000
+    max_output_tokens: 1048576
     supports_reasoning: true
+    x_reasoning_efforts: [xhigh, high]
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
     x_output_confidence: provider
-    x_output_source: openrouter.top_provider.max_completion_tokens; reconciled 2026-07-04 (provider lowered 131072->128000)
+    x_output_source: openrouter.top_provider.max_completion_tokens
     x_reasoning_confidence: provider
     x_reasoning_source: openrouter.supported_parameters
   mimo_v25: &mimo_v25
-    max_input_tokens: 1048576
-    max_output_tokens: 131072
+    max_input_tokens: 32000
+    max_output_tokens: 16384
     supports_reasoning: true
+    x_reasoning_efforts: []
     x_input_confidence: provider
     x_input_source: openrouter.top_provider.context_length
     x_output_confidence: owned-policy
-    x_output_source: openrouter-unpublished; conservative ceiling mirroring glm52 precedent
+    x_output_source: openrouter-unpublished; conservative ceiling within current top-provider context
     x_reasoning_confidence: provider
     x_reasoning_source: openrouter.supported_parameters
   qwen36_27b_local: &qwen36_27b_local
     max_input_tokens: 131072
     max_output_tokens: 16384
     supports_reasoning: false
+    x_reasoning_efforts: []
     x_input_confidence: owned-policy
     x_input_source: native-262144-per-model-config-json; owned-policy-local-throughput-cap
     x_output_confidence: owned-policy
     x_output_source: owned-policy-local-output-cap
     x_reasoning_confidence: owned-policy
     x_reasoning_source: local-runtime-no-reasoning-routing
+  gpt54_chatgpt_oauth: &gpt54_chatgpt_oauth
+    max_input_tokens: 1050000
+    max_output_tokens: 128000
+    supports_reasoning: true
+    # GPT-5.4 itself reasons, but LiteLLM 1.92's chatgpt/* subscription adapter
+    # does not publish a selectable-effort capability and the production OAuth
+    # wire path has not been validated for this parameter. Refuse explicit
+    # effort instead of borrowing the OpenAI Platform API contract.
+    x_reasoning_efforts: []
+    x_input_confidence: provider
+    x_input_source: chatgpt-oauth-model-metadata
+    x_output_confidence: provider
+    x_output_source: chatgpt-oauth-model-metadata
+    x_output_enforcement: provider-natural-cap-only; chatgpt-adapter-strips-token-limit-fields
+    x_reasoning_confidence: owned-policy
+    x_reasoning_source: chatgpt-oauth-selectable-effort-not-validated
+  grok45_xai_oauth: &grok45_xai_oauth
+    max_input_tokens: 500000
+    max_output_tokens: 32768
+    supports_reasoning: true
+    x_reasoning_efforts: [low, medium, high]
+    x_input_confidence: provider
+    x_input_source: docs.x.ai grok-4.5 model page
+    x_output_confidence: owned-policy
+    x_output_source: provider-does-not-publish-completion-cap; conservative gateway ceiling
+    x_output_enforcement: gateway-request-clamp
+    x_reasoning_confidence: provider
+    x_reasoning_source: docs.x.ai grok-4.5 configurable reasoning
 
 model_list:
-  # Raw provider-facing names (<Model>-<provider lowercase>). Useful for ad-hoc
-  # direct testing; the real backend is always visible in litellm_params.model.
-  # Codex now shares these same real names directly (gpt-* bundled-slug facades
-  # retired 2026-07-04); codex-auto-review below is the one exception -- a
-  # hidden bundled-catalog slug Codex's `review` subcommand hardcodes.
+  # Raw provider-facing names (<Model>-<provider lowercase>). The real backend
+  # is always visible in litellm_params.model.
   - model_name: Kimi-K2.7-Code-openrouter
     litellm_params:
       model: openrouter/moonshotai/kimi-k2.7-code
@@ -79,17 +108,25 @@ model_list:
     litellm_params:
       model: openrouter/z-ai/glm-5.2
       api_key: os.environ/OPENROUTER_API_KEY
+      # LiteLLM 1.92's bundled OpenRouter capability map predates this model's
+      # current effort metadata. OpenRouter's live model catalog explicitly
+      # advertises reasoning_effort, so preserve it instead of letting the
+      # global drop_params policy erase it.
+      allowed_openai_params: [reasoning_effort]
     model_info: *glm52
 
-  # codex-auto-review: hidden bundled-catalog slug (visibility: "hide", codex
-  # 0.142.5) that Codex's `review` subcommand hardcodes a request for -- kept
-  # and repointed to a code-specialized backend (kimi-k2.7-code) for the
-  # code-review use case; not a user-facing model-picker facade.
-  - model_name: codex-auto-review
+  # OAuth-backed cloud routes. Authentication is owned by the LiteLLM provider;
+  # do not add api_key here or inject OPENAI_API_KEY/XAI_API_KEY at launch.
+  - model_name: GPT-5.4-chatgpt-oauth
     litellm_params:
-      model: openrouter/moonshotai/kimi-k2.7-code
-      api_key: os.environ/OPENROUTER_API_KEY
-    model_info: *kimi_k27_code
+      model: chatgpt/gpt-5.4
+    model_info: *gpt54_chatgpt_oauth
+
+  - model_name: Grok-4.5-xai-oauth
+    litellm_params:
+      model: xai/grok-4.5
+      use_xai_oauth: true
+    model_info: *grok45_xai_oauth
 
   # Claude haiku-tier local model: first-class registry entry (not a discovered
   # route) so the tier survives reinstall/discovery and is anchor-checked.
@@ -118,9 +155,9 @@ model_list:
           enable_thinking: false
     model_info: *qwen36_27b_local
 
-# BEGIN ai-litellm discovered local routes
-# Managed by `ai-litellm sync`; generated from runtimes.omlx /v1/models.
-# END ai-litellm discovered local routes
+# BEGIN claude-litellm discovered local routes
+# Managed by `claude-litellm sync`; generated from runtimes.omlx /v1/models.
+# END claude-litellm discovered local routes
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
@@ -148,8 +185,8 @@ x-gateway-cost-guardrail:
 litellm_settings:
   # drop_params: harnesses over-advertise dialect params (thinking/betas/effort);
   # dropping beats provider 400s across N harnesses x M backends. Cost: silent
-  # drops -- observe via `ai-litellm reasoning matrix` drop_risk column; per-model
-  # correction is a SUPPORTED_CAPABILITIES declaration, not flipping this flag.
+  # drops -- observe via `claude-litellm reasoning matrix` drop_risk column; per-model
+  # correction is provider/model-specific routing, not a Claude capability env.
   drop_params: true
   callbacks: [ai_litellm_callbacks.output_clamp.proxy_handler_instance]
   # 1.9x routes Anthropic /v1/messages + tools to the Responses API by default;

@@ -1,14 +1,13 @@
 {
   "schemaVersion": 1,
   "name": "claude",
-  "displayName": "Claude Code via OpenRouter Direct",
+  "displayName": "Claude Code via LiteLLM",
   "adapter": "claude-code",
   "command": "claude",
   "paths": {
     "home": "__AI_LITELLM_HOME__/state/claude-litellm",
     "settings": "__AI_LITELLM_HOME__/config/claude-litellm/settings.json",
     "configDir": "__AI_LITELLM_HOME__/state/claude-litellm/claude-config",
-    "settingsArg": "__AI_LITELLM_HOME__/state/claude-litellm/overlay-settings.json",
     "settingsArgProxy": "__AI_LITELLM_HOME__/state/claude-litellm/overlay-settings-proxy.json"
   },
   "isolation": {
@@ -26,9 +25,9 @@
       ]
     },
     "scrubEnv": [
-      "CODEX_HOME",
       "OPENROUTER_API_KEY",
       "OPENAI_API_KEY",
+      "XAI_API_KEY",
       "OPENAI_API_BASE",
       "OPENAI_BASE_URL",
       "ANTHROPIC_API_KEY",
@@ -69,11 +68,10 @@
     ]
   },
   "provider": {
-    "baseUrl": "https://openrouter.ai/api",
     "auth": {
       "mode": "env-value",
       "env": "ANTHROPIC_AUTH_TOKEN",
-      "source": "openrouter-key"
+      "source": "litellm-master-key"
     }
   },
   "models": {
@@ -86,7 +84,7 @@
     ]
   },
   "adapterConfig": {
-    "mode": "openrouter-direct",
+    "mode": "litellm-proxy",
     "emptyApiKeyEnv": "ANTHROPIC_API_KEY",
     "subagentModelEnv": "CLAUDE_CODE_SUBAGENT_MODEL",
     "fastModeOrgCheckEnv": "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",

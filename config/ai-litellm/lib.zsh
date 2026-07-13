@@ -1,6 +1,6 @@
 # Shared LiteLLM proxy management for local agent wrappers.
 
-export AI_LITELLM_HOME="${AI_LITELLM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm}"
+export AI_LITELLM_HOME="${AI_LITELLM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-litellm}"
 export AI_LITELLM_CONFIG_HOME="${AI_LITELLM_CONFIG_HOME:-$AI_LITELLM_HOME/config}"
 export AI_LITELLM_STATE_HOME="${AI_LITELLM_STATE_HOME:-$AI_LITELLM_HOME/state}"
 export AI_LITELLM_BIN_DIR="${AI_LITELLM_BIN_DIR:-$AI_LITELLM_HOME/bin}"
@@ -525,7 +525,7 @@ console.log(JSON.stringify({
 }
 
 # Emit the full surface model_name -> max_input_tokens map (JSON) from the single
-# source. Generators (Codex catalog) and the doctor staleness check both consume
+# source. Harness budget rendering and diagnostics both consume
 # this so the derivation logic lives in exactly one place.
 ai_litellm_limits_map() {
   ai_litellm_ruby -ryaml -rjson -e '
@@ -538,76 +538,6 @@ Array(config["model_list"]).each do |e|
 end
 puts JSON.generate(out)
 ' "$AI_LITELLM_CONFIG"
-}
-
-# Keep in lockstep with ai_litellm_harness_output_budget (node): same formula,
-# second implementation kept for one-pass batch derivation; check.zsh pins both
-# paths at 221950.
-ai_litellm_codex_catalog_context_map() {
-  local harness="${1:-codex}"
-  local descriptor
-  descriptor="$(ai_litellm_harness_descriptor "$harness")" || return 1
-  ai_litellm_ruby -ryaml -rjson -e '
-def positive_int(value)
-  n = value.to_i
-  n.positive? ? n : nil
-end
-
-def pick_reservation(policy, selection, model)
-  [
-    ["perSelection.#{selection}", policy.dig("perSelection", selection)],
-    ["perTier.#{selection}", policy.dig("perTier", selection)],
-    ["perModel.#{model}", policy.dig("perModel", model)],
-    ["default", policy["default"]]
-  ].each do |_source, value|
-    n = positive_int(value)
-    return n if n
-  end
-  nil
-end
-
-def effective_input(policy, selection, model, context, output)
-  return context if policy.empty?
-  capability = positive_int(output)
-  reservation = pick_reservation(policy, selection, model)
-  reservation ||= [capability, 32000].compact.min
-  return context unless reservation
-  reservation = capability if capability && reservation > capability
-
-  headroom = positive_int(policy["tokenizerHeadroom"]) || 0
-  minimum_input = positive_int(policy["minimumInput"]) || 32768
-  headroom = [headroom, (context * 0.1).floor].min
-  minimum_input = [minimum_input, [1, (context * 0.5).floor].max].min
-  max_reservation = context - headroom - minimum_input
-  if max_reservation < 1
-    reservation = 1
-    headroom = [0, context - minimum_input - reservation].max
-  elsif reservation > max_reservation
-    reservation = max_reservation
-  end
-  [0, context - reservation - headroom].max
-end
-
-config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
-descriptor = JSON.parse(File.read(ARGV[1]))
-policy = descriptor.dig("adapterConfig", "outputReservation") || {}
-out = {}
-Array(config["model_list"]).each do |e|
-  name = e["model_name"]
-  mi = e["model_info"] || {}
-  context = positive_int(mi["max_input_tokens"])
-  next unless name && context
-  api_key = e.dig("litellm_params", "api_key").to_s
-  # api_key: none is the operative local-runtime marker (name-independent; the
-  # discovered-route writer and promoted local entries both emit it).
-  local_runtime = api_key == "none"
-  # C2 is an OpenRouter/shared-window exposure. Local runtimes are already
-  # policy-capped below their observed serving window, so do not shrink them
-  # further through the Codex compatibility catalog.
-  out[name] = local_runtime ? context : effective_input(policy, name, name, context, mi["max_output_tokens"])
-end
-puts JSON.generate(out)
-' "$AI_LITELLM_CONFIG" "$descriptor"
 }
 
 ai_litellm_harness_descriptor() {
@@ -643,10 +573,10 @@ ai_litellm_harness_alias_json() {
   ai_litellm_ruby -rjson -e '
     settings = JSON.parse(File.read(ARGV[0])) rescue {}
     tiers = ARGV[1].to_s.split("\n").reject(&:empty?)
-    al = settings["aliases"] || {}; dal = settings["directAliases"] || {}
+    al = settings["aliases"] || {}
     dn = settings["displayNames"] || {}; out = []
     tiers.each do |t|
-      out << {"tier" => t, "model" => al[t], "direct" => dal[t], "label" => dn[t]}
+      out << {"tier" => t, "model" => al[t], "label" => dn[t]}
     end
     puts JSON.generate(out)
   ' "$settings" "$tiers" 2>/dev/null || printf '[]'
@@ -655,7 +585,7 @@ ai_litellm_harness_alias_json() {
 ai_litellm_harness_alias_set() {
   local harness="${1:-}" tier="${2:-}" model="${3:-}"
   if [[ -z "$harness" || -z "$tier" || -z "$model" ]]; then
-    echo "Usage: ai-litellm harness alias set <harness> <tier> <model_name>" >&2
+    echo "Usage: claude-litellm harness alias set <harness> <tier> <model_name>" >&2
     return 1
   fi
   local settings
@@ -672,26 +602,17 @@ ai_litellm_harness_alias_set() {
     abort("Unknown LiteLLM model_name: #{model}") unless entry
     backend = entry.dig("litellm_params", "model").to_s
     provider = backend.split("/", 2).first
-    # proxy side (always)
     (settings["aliases"] ||= {})[tier] = model
     name, _sep, suffix = model.rpartition("-")
     name = model if name.empty?      # model_name without a trailing -<x>
     label = "#{name} (#{suffix.empty? ? provider : suffix})"
     (settings["displayNames"] ||= {})[tier] = label
-    # direct side: cloud -> derive; local -> leave unchanged + warn
-    if provider == "openrouter"
-      (settings["directAliases"] ||= {})[tier] = backend.sub(%r{\Aopenrouter/}, "")
-      (settings["directDisplayNames"] ||= {})[tier] = label
-      STDERR.puts "warn: direct alias updated to #{settings["directAliases"][tier]}"
-    else
-      STDERR.puts "warn: #{model} is a local/#{provider} model -- direct alias left unchanged (no direct lane)."
-    end
     tmp = "#{settings_path}.tmp.#{$$}"
     File.write(tmp, JSON.pretty_generate(settings) + "\n")
     File.rename(tmp, settings_path)
   ' "$AI_LITELLM_CONFIG" "$settings" "$tier" "$model" || return $?
   echo "Set $harness $tier -> $model"
-  echo "Run 'ai-litellm sync' to apply it to the running proxy."
+  echo "Run 'claude-litellm sync' to apply it to the running proxy."
 }
 
 ai_litellm_harness_names() {
@@ -720,7 +641,7 @@ ai_litellm_assert_rendered_path() {
   fabric_marker="${us}AI_LITELLM_HOME${us}"
   case "$path" in
   *"$fabric_marker"*|*"$home_marker"*)
-    echo "ai-litellm: refusing to create un-rendered ${context}: ${path}" >&2
+    echo "claude-litellm: refusing to create un-rendered ${context}: ${path}" >&2
     echo "  A command was likely run from a source checkout instead of the installed package;" >&2
     echo "  run scripts/install.zsh and use the installed command under ~/.local/bin." >&2
     return 1
@@ -782,7 +703,6 @@ if (descriptor.isolation?.scrubEnv != null) requireStringArray(descriptor.isolat
 const provider = descriptor.provider || {};
 const auth = provider.auth || {};
 if (descriptor.provider != null) {
-  requireString(provider, "baseUrl", "provider");
   if (provider.auth != null) {
     requireString(auth, "mode", "provider.auth");
     requireString(auth, "env", "provider.auth");
@@ -795,8 +715,7 @@ const models = descriptor.models || {};
 const adapterConfig = descriptor.adapterConfig || {};
 switch (descriptor.adapter) {
   case "claude-code":
-    for (const key of ["home", "settings", "configDir", "settingsArg"]) requireString(paths, key, "paths");
-    requireString(provider, "baseUrl", "provider");
+    for (const key of ["home", "settings", "configDir", "settingsArgProxy"]) requireString(paths, key, "paths");
     requireString(auth, "env", "provider.auth");
     requireStringArray(models, "tiers", "models");
     for (const key of ["baseUrlEnv", "discoveryEnv", "tierModelEnvPrefix", "tierDisplayNameEnvPrefix", "autoCompactWindowEnv", "maxOutputTokensEnv"]) requireString(adapterConfig, key, "adapterConfig");
@@ -804,18 +723,6 @@ switch (descriptor.adapter) {
     requirePositiveInteger(adapterConfig.outputReservation || {}, "default", "adapterConfig.outputReservation");
     requirePositiveInteger(adapterConfig.outputReservation || {}, "tokenizerHeadroom", "adapterConfig.outputReservation");
     requirePositiveInteger(adapterConfig.outputReservation || {}, "minimumInput", "adapterConfig.outputReservation");
-    break;
-  case "codex-cli":
-    for (const key of ["home", "settings", "codexHome", "config", "modelCatalog"]) requireString(paths, key, "paths");
-    requireString(provider, "name", "provider");
-    requireString(provider, "baseUrl", "provider");
-    requireString(auth, "env", "provider.auth");
-    requireString(models, "default", "models");
-    if (!isObject(adapterConfig.outputReservation)) errors.push("adapterConfig.outputReservation must be an object");
-    requirePositiveInteger(adapterConfig.outputReservation || {}, "default", "adapterConfig.outputReservation");
-    requirePositiveInteger(adapterConfig.outputReservation || {}, "tokenizerHeadroom", "adapterConfig.outputReservation");
-    requirePositiveInteger(adapterConfig.outputReservation || {}, "minimumInput", "adapterConfig.outputReservation");
-    requireStringArray(adapterConfig, "subcommands", "adapterConfig");
     break;
 }
 
@@ -891,7 +798,7 @@ ai_litellm_resolve_secret_var() {
 
 # Run a command with a wall-clock timeout (macOS ships no `timeout`/`gtimeout`).
 # perl's alarm survives exec; on expiry SIGALRM terminates the child, so a hung
-# external binary (e.g. `codex debug models`) can never hang a sync indefinitely.
+# external binary can never hang a sync indefinitely.
 # Returns the child's status, or a non-zero signal status on timeout.
 ai_litellm_run_timeout() {
   local secs="$1"; shift
@@ -963,10 +870,9 @@ ai_litellm_render_settings_defaults() {
 
   local tmp
   tmp="${settings_path}.$$"
-  # Recursive fill: missing keys (at any depth) get the default; existing
-  # values are never overwritten. Top-level-only merge would silently drop
-  # nested safety defaults (permissions.defaultMode) once a user adds any
-  # sibling key under the same object.
+  # Recursive fill preserves user-owned settings. permissions.defaultMode is
+  # safety-owned by the wrapper, so upgrades must overwrite stale values such
+  # as bypassPermissions instead of retaining them forever.
   jq --argjson defaults "$defaults" '
     def fill($d):
       if (type == "object") and ($d | type == "object") then
@@ -976,6 +882,9 @@ ai_litellm_render_settings_defaults() {
         )
       else . end;
     fill($defaults)
+    | if ($defaults.permissions.defaultMode? != null)
+      then .permissions.defaultMode = $defaults.permissions.defaultMode
+      else . end
   ' "$settings_path" >| "$tmp" || {
     rm -f "$tmp"
     return 1
@@ -990,7 +899,7 @@ ai_litellm_render_claude_settings() {
   local proxy_settings_path="${3:-}"
   local defaults proxy_extra proxy_defaults
 
-  [[ -n "$settings_path" ]] || settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArg)" || return 1
+  [[ -n "$settings_path" ]] || settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArgProxy)" || return 1
   [[ -n "$proxy_settings_path" ]] || proxy_settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArgProxy 2>/dev/null || true)"
 
   defaults="$(ai_litellm_harness_json "$harness" adapterConfig.generatedSettings 2>/dev/null || true)"
@@ -1072,7 +981,7 @@ ai_litellm_claude_shared_settings_lint() {
     if [[ -n "$bad" ]]; then
       echo "claude-litellm: refusing to launch — shared $file env block carries backend routing keys that would override per-invocation routing for every variant:" >&2
       print -r -- "$bad" | sed 's/^/  - /' >&2
-      echo "Move them into the per-mode overlay ($(ai_litellm_harness_json "$harness" paths.settingsArg 2>/dev/null || printf 'overlay-settings.json')) or set AI_LITELLM_SHARED_ENV_LINT=0 to override." >&2
+      echo "Move them into the generated overlay ($(ai_litellm_harness_json "$harness" paths.settingsArgProxy 2>/dev/null || printf 'overlay-settings-proxy.json')) or set AI_LITELLM_SHARED_ENV_LINT=0 to override." >&2
       return 1
     fi
     # A top-level apiKeyHelper runs a credential-minting command on every launch,
@@ -1081,7 +990,7 @@ ai_litellm_claude_shared_settings_lint() {
     # to a third party. The env denylist above never sees it (it is not an env
     # key), so refuse it explicitly.
     if [[ "$(jq -r 'has("apiKeyHelper")' "$file" 2>/dev/null || echo false)" == "true" ]]; then
-      echo "claude-litellm: refusing to launch — shared $file defines apiKeyHelper, which mints a credential for every variant (including non-Anthropic backends) and would leak it to the proxy. Move it into the per-mode overlay ($(ai_litellm_harness_json "$harness" paths.settingsArg 2>/dev/null || printf 'overlay-settings.json')) or set AI_LITELLM_SHARED_ENV_LINT=0 to override." >&2
+      echo "claude-litellm: refusing to launch — shared $file defines apiKeyHelper, which mints a credential for every variant (including non-Anthropic backends) and would leak it to the proxy. Move it into the generated overlay ($(ai_litellm_harness_json "$harness" paths.settingsArgProxy 2>/dev/null || printf 'overlay-settings-proxy.json')) or set AI_LITELLM_SHARED_ENV_LINT=0 to override." >&2
       return 1
     fi
     model="$(jq -r '.model // empty' "$file" 2>/dev/null || true)"
@@ -1106,7 +1015,7 @@ ai_litellm_cli_arg_present() {
 
 ai_litellm_harnesses() {
   local harness
-  echo "ai-litellm harnesses"
+  echo "claude-litellm harnesses"
   ai_litellm_harness_names | while IFS= read -r harness; do
     printf '  %s -> %s\n' "$harness" "$(ai_litellm_harness_json "$harness" adapter 2>/dev/null || printf 'unknown')"
   done
@@ -1170,7 +1079,7 @@ ai_litellm_harness_info_json() {
 ai_litellm_launch() {
   local harness="$1"
   [[ -n "$harness" ]] || {
-    echo "Usage: ai-litellm launch <harness> [args...]" >&2
+    echo "Usage: claude-litellm launch <harness> [args...]" >&2
     return 1
   }
   shift
@@ -1183,9 +1092,6 @@ ai_litellm_launch() {
   case "$adapter" in
     claude-code)
       CLAUDE_LITELLM_HARNESS="$harness" "$AI_LITELLM_BIN_DIR/claude-litellm" "$@"
-      ;;
-    codex-cli)
-      CODEX_LITELLM_HARNESS="$harness" "$AI_LITELLM_BIN_DIR/codex-litellm" "$@"
       ;;
     *)
       echo "Unsupported harness adapter: $adapter" >&2
@@ -1492,7 +1398,7 @@ ai_litellm_runtime_status_one() {
     if (( ${#available_models[@]} > 0 )); then
       echo "Runtime advertises models:"
       printf '  %s\n' "${available_models[@]}"
-      echo "Hint: run 'ai-litellm sync' to generate local routes for advertised models."
+      echo "Hint: run 'claude-litellm sync' to generate local routes for advertised models."
     fi
   fi
 }
@@ -1625,9 +1531,43 @@ ai_litellm_pid_is_litellm() {
   local pid="$1"
   [[ "$pid" == <-> ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  local command_line
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ "$command_line" == *litellm* ]]
+  local command_line process_executable executable_name config venv bootstrap
+  command_line="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+  process_executable="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
+  config="$AI_LITELLM_CONFIG"
+  venv="$AI_LITELLM_HOME/runtime/venv"
+  bootstrap="$AI_LITELLM_CONFIG_HOME/ai_litellm_callbacks/proxy_bootstrap.py"
+  executable_name="${process_executable:t:l}"
+  [[ "$command_line" == *"--config $config"* || "$command_line" == *"--config=$config"* ]] || return 1
+
+  # Installed runtime: actual executable and argv must both belong to this
+  # prefix. This rejects rg/editors/backups that merely mention these paths.
+  if [[ "$executable_name" == python* ]]; then
+    [[ "$command_line" == "$process_executable $venv/bin/litellm "* || \
+       "$command_line" == "$process_executable $venv/bin/litellm-proxy "* || \
+       ( -f "$bootstrap" && ! -L "$bootstrap" && "$command_line" == "$process_executable $bootstrap --config $config"* ) || \
+       ( -f "$bootstrap" && ! -L "$bootstrap" && "$command_line" == "$venv/bin/python $bootstrap --config $config"* ) || \
+       "$command_line" == "$process_executable $venv/"*"/litellm/proxy/"* ]] && return 0
+  elif [[ "$process_executable" == "$venv/bin/litellm" || \
+          "$process_executable" == "$venv/bin/litellm-proxy" ]]; then
+    [[ "$command_line" == "$process_executable "* ]] && return 0
+  fi
+
+  # Checkout/legacy mode may launch a system or uv-managed LiteLLM. The PID file
+  # is the primary ownership claim, but still require an actual executable/module
+  # argv followed by this exact config; a substring match is never sufficient.
+  case "$executable_name" in
+    litellm|litellm-proxy)
+      [[ "$command_line" == "$process_executable "* ]]
+      ;;
+    python*)
+      [[ "$command_line" == "$process_executable "*/bin/litellm" --config $config"* || \
+         "$command_line" == "$process_executable "*/bin/litellm-proxy" --config $config"* || \
+         "$command_line" == "$process_executable $bootstrap --config $config"* || \
+         "$command_line" == "$process_executable -m litellm --config $config"* ]]
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 ai_litellm_active_pid_file() {
@@ -1689,7 +1629,49 @@ ai_litellm_proxy_model_names() {
 
 ai_litellm_proxy_registry_matches_file() {
   ai_litellm_health || return 0
-  diff -u <(ai_litellm_model_names | sort -u) <(ai_litellm_proxy_model_names | sort -u) >/dev/null
+  local oauth_python oauth_manager oauth_status actual_models
+  oauth_python="$(ai_litellm_litellm_python 2>/dev/null)" || return 1
+  oauth_manager="$AI_LITELLM_HOME/config/claude-litellm/oauth.py"
+  [[ -f "$oauth_manager" ]] || return 1
+  oauth_status="$("$oauth_python" "$oauth_manager" status all --json 2>/dev/null)" || return 1
+  actual_models="$(ai_litellm_proxy_model_names)" || return 1
+
+  # LiteLLM resolves ChatGPT OAuth while constructing its deployment.  Our
+  # non-interactive guard makes a logged-out deployment fail closed, and the
+  # router continues without that one route.  Therefore every non-OAuth route
+  # is required, while an OAuth route is required only when its credential is
+  # currently authenticated and permission-safe.  Logged-out OAuth routes may
+  # be present (xAI currently initializes lazily) or absent (ChatGPT currently
+  # initializes eagerly), but no route outside the config is accepted.
+  ai_litellm_ruby -ryaml -rjson -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+status = JSON.parse(ARGV[1]).each_with_object({}) { |row, out| out[row["provider"]] = row }
+actual = ARGV[2].lines.map(&:strip).reject(&:empty?).uniq
+configured = []
+required = []
+Array(config["model_list"]).each do |entry|
+  name = entry["model_name"].to_s
+  next if name.empty?
+  configured << name
+  params = entry["litellm_params"] || {}
+  backend = params["model"].to_s
+  provider = if backend.start_with?("chatgpt/")
+    "chatgpt"
+  elsif params["use_xai_oauth"] == true
+    "grok"
+  end
+  row = provider && status[provider]
+  authenticated = row && row["authenticated"] == true && row["permissionsSafe"] == true
+  required << name if provider.nil? || authenticated
+end
+missing = required.uniq - actual
+unexpected = actual - configured.uniq
+unless missing.empty? && unexpected.empty?
+  warn "missing required proxy routes: #{missing.join(", ")}" unless missing.empty?
+  warn "unexpected proxy routes: #{unexpected.join(", ")}" unless unexpected.empty?
+  exit 1
+end
+' "$AI_LITELLM_CONFIG" "$oauth_status" "$actual_models"
 }
 
 ai_litellm_reachable_proxy_current() {
@@ -1745,8 +1727,43 @@ ai_litellm_acquire_lock() {
   return 1
 }
 
+ai_litellm_cleanup_failed_start() {
+  local pid="$1" i
+  [[ "$pid" == <-> ]] || return 0
+
+  # Only signal the exact process we just launched if it still proves ownership
+  # immediately before each signal. If it exited or the PID was reused, merely
+  # discard our stale bookkeeping.
+  if ai_litellm_pid_is_litellm "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for i in {1..30}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null && ai_litellm_pid_is_litellm "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -f "$AI_LITELLM_PID_FILE" && "$(<$AI_LITELLM_PID_FILE)" == "$pid" ]]; then
+    rm -f "$AI_LITELLM_PID_FILE"
+  fi
+  rm -f "$AI_LITELLM_CONFIG_HASH_FILE" "$AI_LITELLM_STARTED_AT_FILE"
+}
+
 ai_litellm_start() {
-  local master_key openrouter_key
+  local master_key openrouter_key proxy_python
+  proxy_python="$(ai_litellm_litellm_python 2>/dev/null)" || {
+    echo "LiteLLM Python runtime is unavailable; reinstall the pinned runtime." >&2
+    return 1
+  }
+  if ! PYTHONPATH="$AI_LITELLM_CONFIG_HOME${PYTHONPATH:+:$PYTHONPATH}" "$proxy_python" -c '
+from ai_litellm_callbacks.oauth_guard import PATCH_ACTIVE
+assert PATCH_ACTIVE is True
+' >/dev/null 2>&1; then
+    echo "ChatGPT OAuth non-interactive refresh guard is inactive; refusing to start the proxy. Reinstall the pinned runtime." >&2
+    return 1
+  fi
   master_key="$(ai_litellm_master_key 2>/dev/null)" || true
   if [[ -z "$master_key" ]]; then
     echo "Missing LiteLLM master key. Store it in Keychain service $LITELLM_MASTER_KEYCHAIN_SERVICE or $AI_LITELLM_ENV." >&2
@@ -1755,8 +1772,7 @@ ai_litellm_start() {
 
   openrouter_key="$(ai_litellm_openrouter_key 2>/dev/null)" || true
   if grep -q 'os\.environ/OPENROUTER_API_KEY' "$AI_LITELLM_CONFIG" && [[ -z "$openrouter_key" ]]; then
-    echo "Missing OpenRouter API key. Store it in Keychain service $OPENROUTER_KEYCHAIN_SERVICE or $AI_LITELLM_ENV." >&2
-    return 1
+    echo "warn: OpenRouter routes are configured without an OpenRouter API key; those routes will fail, while OAuth and local routes remain available." >&2
   fi
 
   mkdir -p "$AI_LITELLM_PROXY_HOME"
@@ -1766,7 +1782,7 @@ ai_litellm_start() {
   if ai_litellm_health; then
     if ! ai_litellm_reachable_proxy_current; then
       echo "LiteLLM is reachable at $(ai_litellm_base_url), but it has not loaded the current $AI_LITELLM_CONFIG routes." >&2
-      echo "Run 'ai-litellm sync' before launching harnesses." >&2
+      echo "Run 'claude-litellm sync' before launching harnesses." >&2
       return 1
     fi
     echo "LiteLLM is already reachable at $(ai_litellm_base_url)"
@@ -1779,7 +1795,7 @@ ai_litellm_start() {
   if (( lock_result == 2 )); then
     if ! ai_litellm_reachable_proxy_current; then
       echo "LiteLLM is reachable at $(ai_litellm_base_url), but it has not loaded the current $AI_LITELLM_CONFIG routes." >&2
-      echo "Run 'ai-litellm sync' before launching harnesses." >&2
+      echo "Run 'claude-litellm sync' before launching harnesses." >&2
       return 1
     fi
     echo "LiteLLM is already reachable at $(ai_litellm_base_url)"
@@ -1794,7 +1810,7 @@ ai_litellm_start() {
     ai_litellm_clear_lock
     if ! ai_litellm_reachable_proxy_current; then
       echo "LiteLLM is reachable at $(ai_litellm_base_url), but it has not loaded the current $AI_LITELLM_CONFIG routes." >&2
-      echo "Run 'ai-litellm sync' before launching harnesses." >&2
+      echo "Run 'claude-litellm sync' before launching harnesses." >&2
       return 1
     fi
     echo "LiteLLM is already reachable at $(ai_litellm_base_url)"
@@ -1835,14 +1851,21 @@ ai_litellm_start() {
     LITELLM_MASTER_KEY="$master_key" \
     AI_LITELLM_HOST="$(ai_litellm_host)" \
     AI_LITELLM_PORT="$(ai_litellm_port)" \
+    AI_LITELLM_PYTHON="$proxy_python" \
+    NUM_WORKERS=1 \
     PYTHONPATH="$AI_LITELLM_CONFIG_HOME${PYTHONPATH:+:$PYTHONPATH}" \
-    env "${extra_env[@]}" python3 - <<'PY'
+    env -u OPENAI_API_KEY -u XAI_API_KEY "${extra_env[@]}" python3 - <<'PY'
 import os
 import subprocess
 import sys
 
 cmd = [
-    "litellm",
+    os.environ["AI_LITELLM_PYTHON"],
+    os.path.join(
+        os.environ["AI_LITELLM_CONFIG_HOME"],
+        "ai_litellm_callbacks",
+        "proxy_bootstrap.py",
+    ),
     "--config",
     os.environ["AI_LITELLM_CONFIG"],
     "--host",
@@ -1876,7 +1899,7 @@ PY
 
   local i
   for i in {1..30}; do
-    if ai_litellm_health; then
+    if ai_litellm_health && ai_litellm_proxy_registry_matches_file && ai_litellm_pid_is_litellm "$pid"; then
       ai_litellm_record_proxy_config_state
       echo "LiteLLM started at $(ai_litellm_base_url) (pid $pid)"
       ai_litellm_clear_lock
@@ -1886,26 +1909,44 @@ PY
   done
 
   echo "LiteLLM did not become healthy. Log: $AI_LITELLM_LOG_FILE"
+  ai_litellm_cleanup_failed_start "$pid"
   ai_litellm_clear_lock
   return 1
 }
 
 ai_litellm_stop() {
-  echo "Stopping shared LiteLLM proxy; active claude-litellm and codex-litellm sessions may fail." >&2
+  echo "Stopping shared LiteLLM proxy; active claude-litellm sessions may fail." >&2
 
   local pid_file pid
   pid_file="$(ai_litellm_active_pid_file 2>/dev/null)" || {
     rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
-    echo "No ai-litellm managed LiteLLM process is running"
+    echo "No claude-litellm managed LiteLLM process is running"
     return 0
   }
   pid="$(ai_litellm_pid_from_file "$pid_file")" || {
     rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
-    echo "No ai-litellm managed LiteLLM process is running"
+    echo "No claude-litellm managed LiteLLM process is running"
     return 0
   }
 
-  kill "$pid" 2>/dev/null || true
+  # Close PID-reuse races: revalidate immediately before every signal.
+  ai_litellm_pid_is_litellm "$pid" || {
+    echo "Refusing to stop pid $pid: LiteLLM ownership changed." >&2
+    return 1
+  }
+  kill -TERM "$pid" 2>/dev/null || true
+  local attempt
+  for attempt in {1..20}; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  if kill -0 "$pid" 2>/dev/null && ai_litellm_pid_is_litellm "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  if kill -0 "$pid" 2>/dev/null && ai_litellm_pid_is_litellm "$pid"; then
+    echo "Failed to stop owned LiteLLM pid $pid; state was retained." >&2
+    return 1
+  fi
   rm -f "$AI_LITELLM_PID_FILE" "$AI_LITELLM_LEGACY_PID_FILE" "$AI_LITELLM_LEGACY_CLAUDE_PID_FILE"
   rm -f "$AI_LITELLM_CONFIG_HASH_FILE" "$AI_LITELLM_STARTED_AT_FILE"
   ai_litellm_clear_lock
@@ -2114,7 +2155,7 @@ ai_litellm_model_info() {
 ai_litellm_probe_route() {
   local model_name="$1"
   [[ -n "$model_name" ]] || {
-    echo "Usage: ai-litellm probe-route <model_name> [model_name...]" >&2
+    echo "Usage: claude-litellm probe-route <model_name> [model_name...]" >&2
     return 1
   }
 
@@ -2152,7 +2193,7 @@ ai_litellm_probe_route() {
 ai_litellm_probe_routes() {
   local failed=0
   if (( $# == 0 )); then
-    echo "Usage: ai-litellm probe-route <model_name> [model_name...]" >&2
+    echo "Usage: claude-litellm probe-route <model_name> [model_name...]" >&2
     return 1
   fi
 
@@ -2293,7 +2334,7 @@ ai_litellm_key_set() {
   local value_provided=0
   (( $# == 2 )) && value_provided=1
   if [[ -z "$name" || $# -gt 2 ]]; then
-    echo "Usage: ai-litellm key set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]" >&2
+    echo "Usage: claude-litellm key set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]" >&2
     echo "Omit [value] to enter it without echoing. Prefer --keychain on macOS." >&2
     return 1
   fi
@@ -2314,7 +2355,7 @@ ai_litellm_key_set() {
     if ai_litellm_env_value "$env_key" >/dev/null 2>&1; then
       echo "warn: $AI_LITELLM_ENV also contains $env_key and currently takes precedence over Keychain." >&2
     fi
-    echo "Run 'ai-litellm sync' if the proxy is already running."
+    echo "Run 'claude-litellm sync' if the proxy is already running."
     return 0
   fi
 
@@ -2346,7 +2387,7 @@ ai_litellm_key_set() {
     ai_litellm_env_set_value "$env_key" "$value" || return $?
     echo "Stored $env_key in $AI_LITELLM_ENV"
   fi
-  echo "Run 'ai-litellm sync' if the proxy is already running."
+  echo "Run 'claude-litellm sync' if the proxy is already running."
 }
 
 ai_litellm_logs() {
@@ -2380,25 +2421,6 @@ ai_litellm_doctor_warn_env() {
   [[ -n "$LITELLM_MASTER_KEY" ]] && echo "warn LITELLM_MASTER_KEY is set in current environment"
 }
 
-ai_litellm_doctor_shortcuts() {
-  local settings="${CODEX_LITELLM_SETTINGS:-$AI_LITELLM_CONFIG_HOME/codex-litellm/settings.json}"
-  [[ -f "$settings" ]] || return 0
-  local descriptor
-  descriptor="$(ai_litellm_harness_descriptor codex)" || return 1
-  node -e '
-const fs = require("fs");
-const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const descriptor = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const aliases = Object.keys(settings.aliases || {});
-const subcommands = new Set(descriptor.adapterConfig?.subcommands || []);
-const conflicts = aliases.filter((alias) => subcommands.has(alias));
-if (conflicts.length) {
-  console.error(`conflicting Codex shortcuts: ${conflicts.join(", ")}`);
-  process.exit(1);
-}
-' "$settings" "$descriptor"
-}
-
 ai_litellm_doctor_harnesses() {
   local failed=0
   local harness
@@ -2409,74 +2431,6 @@ ai_litellm_doctor_harnesses() {
     fi
   done
   return $failed
-}
-
-ai_litellm_doctor_codex_config_base_url() {
-  local config
-  config="$(ai_litellm_harness_json codex paths.config 2>/dev/null)" || return 0
-  [[ -f "$config" ]] || return 0
-  local configured
-  configured="$(awk -F'"' '/^[[:space:]]*base_url[[:space:]]*=/ { print $2; exit }' "$config" 2>/dev/null)"
-  [[ "$configured" == "$(ai_litellm_api_base_url)" ]]
-}
-
-ai_litellm_doctor_limit_sync() {
-  local raw_map codex_map
-  raw_map="$(ai_litellm_limits_map 2>/dev/null)" || return 0
-  [[ -n "$raw_map" && "$raw_map" != "{}" ]] || return 0
-  codex_map="$(ai_litellm_codex_catalog_context_map codex 2>/dev/null)" || codex_map="$raw_map"
-  [[ -n "$codex_map" && "$codex_map" != "{}" ]] || codex_map="$raw_map"
-  local failed=0 mismatch
-
-  local catalog
-  catalog="$(ai_litellm_harness_json codex paths.modelCatalog 2>/dev/null || true)"
-  [[ -n "$catalog" ]] || catalog="$AI_LITELLM_STATE_HOME/codex-litellm/model-catalog.json"
-  if [[ -f "$catalog" ]]; then
-    mismatch="$(node -e '
-const fs = require("fs");
-const map = JSON.parse(process.argv[1]);
-const cat = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const bad = [];
-for (const m of cat.models || []) {
-  if (map[m.slug] != null && m.context_window !== map[m.slug]) {
-    bad.push(`${m.slug}(${m.context_window}!=${map[m.slug]})`);
-  }
-}
-if (bad.length) console.log(bad.join(" "));
-' "$codex_map" "$catalog" 2>/dev/null)"
-    if [[ -n "$mismatch" ]]; then
-      echo "stale Codex catalog safe context_window: $mismatch (run: ai-litellm sync)" >&2
-      failed=1
-    fi
-  fi
-
-  return $failed
-}
-
-ai_litellm_doctor_reasoning_sync() {
-  local descriptor config
-  descriptor="$(ai_litellm_harness_descriptor codex 2>/dev/null)" || return 0
-  config="$(ai_litellm_harness_json codex paths.config 2>/dev/null || true)"
-  [[ -n "$config" && -f "$config" ]] || return 0
-
-  node -e '
-const fs = require("fs");
-const descriptor = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const config = fs.readFileSync(process.argv[2], "utf8");
-const adapter = descriptor.adapterConfig || {};
-const expected = String(adapter.modelReasoningEffort || "xhigh");
-const metadataEffort = adapter.reasoning && adapter.reasoning.effort;
-if (metadataEffort && String(metadataEffort) !== expected) {
-  console.error(`Codex descriptor reasoning drift: reasoning.effort=${metadataEffort} modelReasoningEffort=${expected}`);
-  process.exit(1);
-}
-const match = config.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/m);
-const actual = match && match[1];
-if (actual !== expected) {
-  console.error(`stale Codex reasoning config: model_reasoning_effort=${actual || "<missing>"} expected=${expected} (run: ai-litellm sync)`);
-  process.exit(1);
-}
-' "$descriptor" "$config"
 }
 
 ai_litellm_doctor_reasoning_capability_truth() {
@@ -2515,10 +2469,15 @@ observed_backends = {
 seen = set()
 for entry in config.get("model_list") or []:
     name = entry.get("model_name")
-    backend = (entry.get("litellm_params") or {}).get("model")
+    litellm_params = entry.get("litellm_params") or {}
+    backend = litellm_params.get("model")
     if not name or not backend:
         continue
     if (entry.get("model_info") or {}).get("supports_reasoning") is not True:
+        continue
+    # Never let a read-only doctor trigger OAuth/device login. OAuth capability
+    # truth is checked from x_reasoning_efforts by the metadata doctor.
+    if backend.startswith("chatgpt/") or litellm_params.get("use_xai_oauth") is True:
         continue
     key = (backend, drop_params)
     if key in seen:
@@ -2537,15 +2496,6 @@ for entry in config.get("model_list") or []:
         mode = "dropped" if drop_params else "rejected"
         print(f"warn declared reasoning may be {mode} by local LiteLLM for backend {backend}")
 PY
-}
-
-ai_litellm_render_codex_config() {
-  local shell="$AI_LITELLM_CONFIG_HOME/codex-litellm/shell.zsh"
-  [[ -f "$shell" ]] || return 0
-  (
-    source "$shell" >/dev/null 2>&1 || exit 1
-    codex-litellm-render-config
-  )
 }
 
 ai_litellm_runtime_discovery_enabled() {
@@ -2575,6 +2525,7 @@ default_info = rt["defaultModelInfo"] || {
   "max_input_tokens" => 8192,
   "max_output_tokens" => 4096,
   "supports_reasoning" => false,
+  "x_reasoning_efforts" => [],
   "x_input_confidence" => "owned-policy",
   "x_input_source" => "quality-conservative-local-policy; runtime-specific",
   "x_output_confidence" => "owned-policy",
@@ -2622,8 +2573,8 @@ emit_params = lambda do |hash, indent|
     .map { |l| l.strip.empty? ? "\n" : (" " * indent) + l }.join
 end
 
-start_marker = "# BEGIN ai-litellm discovered local routes"
-end_marker = "# END ai-litellm discovered local routes"
+start_marker = "# BEGIN claude-litellm discovered local routes"
+end_marker = "# END claude-litellm discovered local routes"
 original = File.read(config_path)
 
 clean_lines = []
@@ -2687,7 +2638,7 @@ exit 0 if dry_run == "1"
 block = ""
 unless routes.empty?
   block << "#{start_marker}\n"
-  block << "# Managed by `ai-litellm sync`; generated from runtimes.#{runtime_name} /v1/models.\n"
+  block << "# Managed by `claude-litellm sync`; generated from runtimes.#{runtime_name} /v1/models.\n"
   routes.each do |route, model_id|
     block << "  - model_name: #{scalar.call(route)}\n"
     block << "    litellm_params:\n"
@@ -2756,7 +2707,7 @@ ai_litellm_runtime_routes_refresh() {
 # Regenerate every derived artifact from the single source and reload the proxy.
 # After editing a token limit in litellm_config.yaml, this is the one command to run.
 ai_litellm_sync() {
-  local failed=0 dry_run=0 restart=1 codex_command codex_wrapper arg
+  local failed=0 dry_run=0 restart=1 arg
   for arg in "$@"; do
     case "$arg" in
       --dry-run)
@@ -2767,7 +2718,7 @@ ai_litellm_sync() {
         restart=0
         ;;
       -h|--help)
-        echo "Usage: ai-litellm sync [--dry-run] [--no-restart]"
+        echo "Usage: claude-litellm sync [--dry-run] [--no-restart]"
         echo "  --dry-run     print derived-artifact actions without writing or restarting"
         echo "  --no-restart  regenerate derived artifacts without restarting the shared proxy"
         return 0
@@ -2779,7 +2730,7 @@ ai_litellm_sync() {
     esac
   done
 
-  echo "ai-litellm sync"
+  echo "claude-litellm sync"
   (( dry_run )) && echo "- dry-run: no files will be changed and proxy will not restart"
 
   # Serialize the multi-file rewrite against another sync. Uses a DEDICATED lock
@@ -2816,7 +2767,7 @@ ai_litellm_sync() {
         fi
       fi
       if (( ! sync_lock_held )); then
-        echo "ai-litellm sync: another sync is in progress (pid $other_pid); refusing to run concurrently." >&2
+        echo "claude-litellm sync: another sync is in progress (pid $other_pid); refusing to run concurrently." >&2
         echo "  if no sync is actually running, clear it: rm -rf '$sync_lock'" >&2
         return 1
       fi
@@ -2826,28 +2777,8 @@ ai_litellm_sync() {
     rm -f -- "${AI_LITELLM_CONFIG}".tmp.*(N) 2>/dev/null || true
   fi
 
-  # Order matters: discover local routes BEFORE the codex catalog/config so
-  # freshly discovered local slugs are included in the same sync.
+  # Discover local routes before rendering the Claude adapter.
   ai_litellm_runtime_routes_refresh "$dry_run" || failed=1
-
-  codex_command="$(ai_litellm_harness_json codex command 2>/dev/null || printf 'codex')"
-  codex_wrapper="$AI_LITELLM_BIN_DIR/codex-litellm"
-  if [[ -x "$codex_wrapper" ]]; then
-    if [[ -n "$codex_command" ]] && command -v "$codex_command" >/dev/null 2>&1; then
-      echo "- codex catalog"
-      if (( ! dry_run )); then
-        "$codex_wrapper" --refresh-catalog || failed=1
-      fi
-    else
-      echo "- codex catalog skipped (${codex_command:-codex} not installed)"
-    fi
-    echo "- codex config"
-    if (( ! dry_run )); then
-      ai_litellm_render_codex_config || failed=1
-    fi
-  else
-    echo "- codex catalog/config skipped ($codex_wrapper not installed)"
-  fi
 
   if ai_litellm_harness_descriptor claude >/dev/null 2>&1; then
     echo "- claude settings"
@@ -2904,12 +2835,12 @@ ai_litellm_doctor_runtimes() {
 ai_litellm_doctor_runtime() {
   local runtime="$1"
   if [[ -z "$runtime" ]]; then
-    echo "Usage: ai-litellm doctor --runtime <name>" >&2
+    echo "Usage: claude-litellm doctor --runtime <name>" >&2
     return 1
   fi
 
   local failed=0
-  echo "ai-litellm doctor --runtime $runtime"
+  echo "claude-litellm doctor --runtime $runtime"
   ai_litellm_doctor_check "runtime block valid" ai_litellm_runtime_validate "$runtime" || failed=1
   ai_litellm_doctor_check "runtime configured" ai_litellm_quiet ai_litellm_runtime_field "$runtime" apiBase || failed=1
 
@@ -2964,7 +2895,7 @@ ai_litellm_doctor_runtime() {
 }
 
 ai_litellm_capabilities() {
-  echo "ai-litellm capabilities"
+  echo "claude-litellm capabilities"
   echo "Proxy: $(ai_litellm_base_url)"
   if ai_litellm_health; then
     echo "Proxy health: ok"
@@ -3008,16 +2939,13 @@ ai_litellm_doctor() {
   done
 
   local failed=0
-  echo "ai-litellm doctor"
+  echo "claude-litellm doctor"
   ai_litellm_doctor_warn_env
   ai_litellm_doctor_check "config exists" test -f "$AI_LITELLM_CONFIG" || failed=1
   ai_litellm_doctor_check "settings exists" test -f "$AI_LITELLM_SETTINGS" || failed=1
   ai_litellm_doctor_check "lib syntax" zsh -n "$AI_LITELLM_CONFIG_HOME/ai-litellm/lib.zsh" || failed=1
   ai_litellm_doctor_check "claude helper syntax" zsh -n "$AI_LITELLM_CONFIG_HOME/claude-litellm/shell.zsh" || failed=1
-  ai_litellm_doctor_check "codex helper syntax" zsh -n "$AI_LITELLM_CONFIG_HOME/codex-litellm/shell.zsh" || failed=1
-  ai_litellm_doctor_check "ai-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/ai-litellm" || failed=1
   ai_litellm_doctor_check "claude-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/claude-litellm" || failed=1
-  ai_litellm_doctor_check "codex-litellm command syntax" zsh -n "$AI_LITELLM_BIN_DIR/codex-litellm" || failed=1
   ai_litellm_doctor_check "litellm command available" ai_litellm_quiet command -v litellm || failed=1
   ai_litellm_doctor_check "node command available" ai_litellm_quiet command -v node || failed=1
   ai_litellm_doctor_check "curl command available" ai_litellm_quiet command -v curl || failed=1
@@ -3025,7 +2953,11 @@ ai_litellm_doctor() {
   # Only require the OpenRouter key if the registry actually references it (same
   # gate as ai_litellm_start), so a non-OpenRouter fabric does not false-FAIL.
   if grep -q 'os\.environ/OPENROUTER_API_KEY' "$AI_LITELLM_CONFIG" 2>/dev/null; then
-    ai_litellm_doctor_check "OpenRouter key available" ai_litellm_quiet ai_litellm_openrouter_key || failed=1
+    if ai_litellm_quiet ai_litellm_openrouter_key; then
+      echo "ok   OpenRouter key available"
+    else
+      echo "warn OpenRouter key missing; only OpenRouter routes are unavailable"
+    fi
   fi
   # Every other provider key the registry references must resolve too.
   local _pref
@@ -3037,8 +2969,6 @@ ai_litellm_doctor() {
   done
   ai_litellm_doctor_check "LiteLLM master key available" ai_litellm_quiet ai_litellm_master_key || failed=1
   ai_litellm_doctor_harnesses || failed=1
-  ai_litellm_doctor_check "Codex generated config follows ai-litellm base URL" ai_litellm_doctor_codex_config_base_url || failed=1
-  ai_litellm_doctor_check "Codex shortcuts do not shadow subcommands" ai_litellm_doctor_shortcuts || failed=1
   ai_litellm_doctor_check "local model routes are unique" ai_litellm_doctor_local_route_uniqueness || failed=1
   ai_litellm_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
   ai_litellm_doctor_check "output reservation policy aligned" ai_litellm_context_output_reservation_aligned || failed=1
@@ -3046,9 +2976,7 @@ ai_litellm_doctor() {
   ai_litellm_doctor_check "gateway estimated-token cost guardrail policy valid" ai_litellm_context_gateway_cost_guardrail_policy_ok || failed=1
   ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
   ai_litellm_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
-  ai_litellm_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
-  ai_litellm_doctor_check "harness reasoning configs match descriptors" ai_litellm_doctor_reasoning_sync || failed=1
   ai_litellm_doctor_reasoning_capability_truth
   ai_litellm_doctor_runtimes || failed=1
   ai_litellm_doctor_check "runtime/registry consistency" ai_litellm_runtime_consistency || failed=1
@@ -3072,7 +3000,7 @@ ai_litellm_doctor() {
   return $failed
 }
 
-# Token-limit table from the single source. Powers `ai-litellm model limits`.
+# Token-limit table from the single source. Powers `claude-litellm model limits`.
 ai_litellm_limits_table() {
   local filter="$1"
   [[ -z "$filter" ]] || filter="$(ai_litellm_model_resolve "$filter" 2>/dev/null || printf '%s\n' "$filter")"
@@ -3130,7 +3058,7 @@ ai_litellm_model_refresh_capabilities() {
       --check) check=1 ;;
       -h|--help)
         cat <<'EOF'
-Usage: ai-litellm model refresh-capabilities [--apply] [--json] [--check]
+Usage: claude-litellm model refresh-capabilities [--apply] [--json] [--check]
 
 Reconcile OpenRouter-backed x-limits anchors with OpenRouter /api/v1/models.
 Default mode is read-only. --apply updates provider-published fields only.
@@ -3138,7 +3066,7 @@ Set AI_LITELLM_OPENROUTER_MODELS_JSON to a local fixture path for offline tests.
 EOF
         return 0
         ;;
-      *) echo "Usage: ai-litellm model refresh-capabilities [--apply] [--json] [--check]" >&2; return 1 ;;
+      *) echo "Usage: claude-litellm model refresh-capabilities [--apply] [--json] [--check]" >&2; return 1 ;;
     esac
     shift
   done
@@ -3175,6 +3103,8 @@ def yaml_scalar(value)
     value.to_s
   when TrueClass, FalseClass
     value ? "true" : "false"
+  when Array
+    value.to_json
   else
     text = value.to_s
     text.match?(/\A[A-Za-z0-9_.\/-]+\z/) ? text : text.to_json
@@ -3215,6 +3145,11 @@ def bool_status(configured, provider, confidence)
   return "drift" unless configured == provider
   return "ok" if %w[provider observed].include?(conf)
   "source-missing"
+end
+
+def array_status(configured, provider)
+  return "drift" unless Array(configured).map(&:to_s) == Array(provider).map(&:to_s)
+  "ok"
 end
 
 def update_anchor_field(lines, alias_name, field, value)
@@ -3278,6 +3213,7 @@ rows = []
     )
     params = Array(provider["supported_parameters"])
     provider_reasoning = params.any? { |param| %w[reasoning reasoning_effort include_reasoning].include?(param.to_s) }
+    provider_efforts = Array(provider.dig("reasoning", "supported_efforts")).map(&:to_s)
 
     input_conf = source_conf(info, "input")
     output_conf = source_conf(info, "output")
@@ -3306,6 +3242,24 @@ rows = []
       "provider_source" => "openrouter.supported_parameters",
       "status" => bool_status(info.key?("supports_reasoning") ? !!info["supports_reasoning"] : nil, provider_reasoning, reasoning_conf)
     }
+    configured_efforts = Array(info["x_reasoning_efforts"]).map(&:to_s)
+    row["effort"] = {
+      "configured" => configured_efforts,
+      "provider" => provider_efforts,
+      "provider_source" => "openrouter.reasoning.supported_efforts",
+      "status" => array_status(configured_efforts, provider_efforts)
+    }
+    route_entries = Array(config["model_list"]).select do |candidate|
+      candidate.dig("litellm_params", "model").to_s == route.to_s
+    end
+    passthrough = route_entries.any? do |candidate|
+      Array(candidate.dig("litellm_params", "allowed_openai_params")).map(&:to_s).include?("reasoning_effort")
+    end
+    row["effort_wire"] = {
+      "required" => !provider_efforts.empty?,
+      "configured" => passthrough,
+      "status" => provider_efforts.empty? || passthrough ? "ok" : "missing-passthrough"
+    }
   else
     row["input"] = {
       "configured" => info["max_input_tokens"],
@@ -3331,6 +3285,17 @@ rows = []
       "provider_source" => nil,
       "status" => openrouter ? "no-provider-model" : source_conf(info, "reasoning")
     }
+    row["effort"] = {
+      "configured" => Array(info["x_reasoning_efforts"]).map(&:to_s),
+      "provider" => nil,
+      "provider_source" => nil,
+      "status" => openrouter ? "no-provider-model" : "local-config"
+    }
+    row["effort_wire"] = {
+      "required" => false,
+      "configured" => false,
+      "status" => openrouter ? "no-provider-model" : "local-config"
+    }
   end
   rows << row
 end
@@ -3344,6 +3309,7 @@ if apply_changes
     input = row["input"] || {}
     output = row["output"] || {}
     reasoning = row["reasoning"] || {}
+    effort = row["effort"] || {}
 
     if input["provider"] && input["status"] != "ok"
       changes << "#{alias_name}.max_input_tokens=#{input["provider"]}" if update_anchor_field(lines, alias_name, "max_input_tokens", input["provider"])
@@ -3360,6 +3326,11 @@ if apply_changes
       changes << "#{alias_name}.x_reasoning_confidence=provider" if update_anchor_field(lines, alias_name, "x_reasoning_confidence", "provider")
       changes << "#{alias_name}.x_reasoning_source=#{reasoning["provider_source"]}" if update_anchor_field(lines, alias_name, "x_reasoning_source", reasoning["provider_source"])
     end
+    if effort["provider"].is_a?(Array) && effort["status"] != "ok"
+      if update_anchor_field(lines, alias_name, "x_reasoning_efforts", effort["provider"])
+        changes << "#{alias_name}.x_reasoning_efforts=#{effort["provider"].join(",")}"
+      end
+    end
   end
 
   if changes.any?
@@ -3370,9 +3341,9 @@ if apply_changes
   end
 end
 
-issue_statuses = %w[drift source-missing provider-missing no-provider-model]
+issue_statuses = %w[drift source-missing provider-missing no-provider-model missing-passthrough]
 issues = rows.flat_map do |row|
-  %w[input output reasoning].map do |dim|
+  %w[input output reasoning effort effort_wire].map do |dim|
     status = row.dig(dim, "status").to_s
     issue_statuses.include?(status) ? {"alias" => row["alias"], "dimension" => dim, "status" => status} : nil
   end.compact
@@ -3387,21 +3358,23 @@ if as_json
     "issues" => issues
   })
 else
-  printf("%-18s %-42s %-25s %-25s %-18s %-18s %-18s\n",
+  printf("%-18s %-42s %-25s %-25s %-18s %-18s %-18s %-18s\n",
     "alias", "provider_model", "input(config/provider)", "output(config/provider)",
-    "input_status", "output_status", "reasoning_status")
+    "input_status", "output_status", "reasoning_status", "effort_status")
   rows.each do |row|
     input = row["input"] || {}
     output = row["output"] || {}
     reasoning = row["reasoning"] || {}
-    printf("%-18s %-42s %-25s %-25s %-18s %-18s %-18s\n",
+    effort = row["effort"] || {}
+    printf("%-18s %-42s %-25s %-25s %-18s %-18s %-18s %-18s\n",
       row["alias"],
       row["provider_model"],
       "#{input["configured"] || "-"}/#{input["provider"] || "-"}",
       "#{output["configured"] || "-"}/#{output["provider"] || "-"}",
       input["status"] || "-",
       output["status"] || "-",
-      reasoning["status"] || "-")
+      reasoning["status"] || "-",
+      effort["status"] || "-")
   end
   if apply_changes
     puts changes.empty? ? "No provider-published changes to apply." : "Applied #{changes.length} field update(s)."
@@ -3421,14 +3394,14 @@ RUBY
 # new x-limits anchor + model_list route (input is always provider-confidence;
 # output is provider-confidence when OpenRouter publishes a completion cap,
 # else a conservative owned-policy fallback). Optionally wires a Claude tier
-# alias (--claude-tier) and a Codex catalog entry (--codex), then syncs.
+# alias (--claude-tier), then syncs.
 # Fixture injection mirrors ai_litellm_model_refresh_capabilities:
 # AI_LITELLM_OPENROUTER_MODELS_JSON substitutes for the live OpenRouter fetch.
 # --dry-run prints the full plan without writing anything or syncing.
 # AI_LITELLM_SKIP_SYNC=1 performs all writes but skips the closing sync (for
 # offline registry-only tests).
 ai_litellm_model_add() {
-  local provider_id="" custom_name="" claude_tier="" codex=0 dry_run=0
+  local provider_id="" custom_name="" claude_tier="" dry_run=0
 
   while (( $# > 0 )); do
     case "$1" in
@@ -3448,15 +3421,12 @@ ai_litellm_model_add() {
         fi
         claude_tier="$1"
         ;;
-      --codex)
-        codex=1
-        ;;
       --dry-run)
         dry_run=1
         ;;
       -h|--help)
         cat <<'EOF'
-Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]
+Usage: claude-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--dry-run]
 
 Fetch OpenRouter capabilities for <provider-id> (an OpenRouter catalog id,
 e.g. z-ai/glm-5.2) and write a new x-limits anchor plus model_list route.
@@ -3465,7 +3435,6 @@ e.g. z-ai/glm-5.2) and write a new x-limits anchor plus model_list route.
                          Deepseek-V4-Pro-openrouter).
   --claude-tier <tier>   Also point a Claude Code tier at the new surface.
                          One of: fable opus sonnet haiku.
-  --codex                Also add a Codex catalog entry for the new surface.
   --dry-run              Print the plan without writing anything or syncing.
 
 Set AI_LITELLM_OPENROUTER_MODELS_JSON to a local fixture path to test offline.
@@ -3479,7 +3448,7 @@ EOF
         ;;
       *)
         if [[ -n "$provider_id" ]]; then
-          echo "Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]" >&2
+          echo "Usage: claude-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--dry-run]" >&2
           return 1
         fi
         provider_id="$1"
@@ -3489,7 +3458,7 @@ EOF
   done
 
   if [[ -z "$provider_id" ]]; then
-    echo "Usage: ai-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--codex] [--dry-run]" >&2
+    echo "Usage: claude-litellm model add <provider-id> [--name <surface>] [--claude-tier <tier>] [--dry-run]" >&2
     return 1
   fi
 
@@ -3497,7 +3466,7 @@ EOF
     case "$claude_tier" in
       fable|opus|sonnet|haiku) ;;
       *)
-        echo "ai-litellm model add: invalid --claude-tier '$claude_tier' (expected one of: fable opus sonnet haiku)" >&2
+        echo "claude-litellm model add: invalid --claude-tier '$claude_tier' (expected one of: fable opus sonnet haiku)" >&2
         return 1
         ;;
     esac
@@ -3575,6 +3544,8 @@ end
 
 params = Array(entry["supported_parameters"]).map(&:to_s)
 reasoning = params.include?("reasoning") || params.include?("reasoning_effort")
+reasoning_efforts = Array(entry.dig("reasoning", "supported_efforts")).map(&:to_s)
+reasoning_efforts &= %w[none minimal low medium high xhigh max]
 
 raw = File.read(config_path)
 config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
@@ -3602,6 +3573,7 @@ anchor_lines = [
   "    max_input_tokens: #{yaml_scalar(max_input)}\n",
   "    max_output_tokens: #{yaml_scalar(max_output)}\n",
   "    supports_reasoning: #{yaml_scalar(reasoning)}\n",
+  "    x_reasoning_efforts: #{reasoning_efforts.to_json}\n",
   "    x_input_confidence: provider\n",
   "    x_input_source: #{yaml_scalar(input_source)}\n",
   "    x_output_confidence: #{yaml_scalar(output_confidence)}\n",
@@ -3617,11 +3589,12 @@ route_lines = [
   "    litellm_params:\n",
   "      model: #{yaml_scalar(backend_model)}\n",
   "      api_key: os.environ/OPENROUTER_API_KEY\n",
+  *(reasoning_efforts.empty? ? [] : ["      allowed_openai_params: [reasoning_effort]\n"]),
   "    model_info: *#{anchor}\n",
   "\n",
 ]
 
-puts "ai-litellm model add #{provider_id}#{dry_run ? " (dry-run)" : ""}"
+puts "claude-litellm model add #{provider_id}#{dry_run ? " (dry-run)" : ""}"
 puts "- surface: #{surface}"
 puts "- anchor: #{anchor}"
 puts "- x-limits anchor to add:"
@@ -3637,7 +3610,7 @@ else
   abort("cannot locate model_list: in #{config_path}") unless idx_model_list
   lines.insert(idx_model_list, *anchor_lines)
 
-  idx_discovered = lines.index { |line| line.match?(/^# BEGIN ai-litellm discovered local routes/) }
+  idx_discovered = lines.index { |line| line.match?(/^# BEGIN claude-litellm discovered local routes/) }
   idx_general = lines.index { |line| line.match?(/^general_settings:\s*$/) }
   insert_at = idx_discovered || idx_general || lines.length
   lines.insert(insert_at, *route_lines)
@@ -3661,7 +3634,7 @@ RUBY
   # Split the captured report into display lines vs. machine-readable marker
   # lines (Surface/Anchor/OutputCapFallback/OutputCap), so the human-facing
   # preview stays clean while this function still learns the resolved surface
-  # name (custom or derived) for the --claude-tier/--codex steps below.
+  # name (custom or derived) for the --claude-tier step below.
   local -a display_lines
   local surface="" anchor="" output_fallback="" output_cap="" line
   for line in "${(@f)out}"; do
@@ -3680,18 +3653,15 @@ RUBY
   fi
 
   if [[ -z "$custom_name" ]]; then
-    echo "ai-litellm model add: derived name '$surface'; use --name for exact casing (e.g. DeepSeek-V4-Pro-openrouter)" >&2
+    echo "claude-litellm model add: derived name '$surface'; use --name for exact casing (e.g. DeepSeek-V4-Pro-openrouter)" >&2
   fi
   if [[ "$output_fallback" == "yes" ]]; then
-    echo "ai-litellm model add: output cap not published by OpenRouter — set a conservative $output_cap; review with 'ai-litellm model limits $surface'" >&2
+    echo "claude-litellm model add: output cap not published by OpenRouter — set a conservative $output_cap; review with 'claude-litellm model limits $surface'" >&2
   fi
 
   if (( dry_run )); then
     if [[ -n "$claude_tier" ]]; then
-      echo "- would set claude tier: $claude_tier -> $surface (aliases/directAliases/displayNames)"
-    fi
-    if (( codex )); then
-      echo "- would add codex catalogEntries entry: $surface"
+      echo "- would set claude tier: $claude_tier -> $surface (aliases/displayNames)"
     fi
     echo "- dry-run: sync not run"
     return 0
@@ -3701,33 +3671,8 @@ RUBY
     ai_litellm_harness_alias_set claude "$claude_tier" "$surface" || return $?
   fi
 
-  if (( codex )); then
-    local codex_descriptor
-    codex_descriptor="$(ai_litellm_harness_descriptor codex 2>/dev/null)" || {
-      echo "ai-litellm model add: no codex harness descriptor found; skipping --codex wiring" >&2
-      return 1
-    }
-    local stem display_name description
-    stem="${surface%-openrouter}"
-    display_name="$stem (openrouter)"
-    description="$provider_id via OpenRouter through LiteLLM."
-    ai_litellm_ruby -rjson -e '
-descriptor_path, slug, display_name, description = ARGV
-data = JSON.parse(File.read(descriptor_path))
-models = (data["models"] ||= {})
-entries = (models["catalogEntries"] ||= [])
-abort("codex catalogEntries already has a slug: #{slug}") if entries.any? { |e| e["slug"] == slug }
-entries << {"slug" => slug, "displayName" => display_name, "description" => description, "priority" => 88}
-tmp = "#{descriptor_path}.tmp.#{$$}"
-File.write(tmp, JSON.pretty_generate(data) + "\n")
-File.chmod(File.stat(descriptor_path).mode & 0o777, tmp)
-File.rename(tmp, descriptor_path)
-' "$codex_descriptor" "$surface" "$display_name" "$description" || return $?
-    echo "ai-litellm model add: added codex catalog entry for $surface"
-  fi
-
   if [[ -n "${AI_LITELLM_SKIP_SYNC:-}" ]]; then
-    echo "ai-litellm model add: AI_LITELLM_SKIP_SYNC set; skipping sync (run ai-litellm sync to apply)"
+    echo "claude-litellm model add: AI_LITELLM_SKIP_SYNC set; skipping sync (run claude-litellm sync to apply)"
     return 0
   fi
 
@@ -3737,13 +3682,11 @@ File.rename(tmp, descriptor_path)
 # Reverse of ai_litellm_model_add: locate a model_list route by its LiteLLM
 # model_name (surface) and remove it, plus its x-limits anchor if no other
 # route still references that anchor. Refuses to remove:
-#   - a discovered route (managed by ai-litellm sync, inside the BEGIN/END
+#   - a discovered route (managed by claude-litellm sync, inside the BEGIN/END
 #     block)
-#   - the codex-auto-review functional slug (hardcoded by codex review)
 #   - a local runtime route (api_key: none; remove via runtime discovery
 #     instead)
-#   - a surface still referenced by a Claude tier alias (aliases or
-#     directAliases) or a Codex catalogEntries slug -- reassign/unwire first
+#   - a surface still referenced by a Claude tier alias -- reassign first
 # --dry-run prints the plan without writing anything or syncing.
 # AI_LITELLM_SKIP_SYNC=1 performs the write but skips the closing sync (for
 # offline registry-only tests), mirroring ai_litellm_model_add.
@@ -3757,14 +3700,13 @@ ai_litellm_model_remove() {
         ;;
       -h|--help)
         cat <<'EOF'
-Usage: ai-litellm model remove <surface> [--dry-run]
+Usage: claude-litellm model remove <surface> [--dry-run]
 
 Remove a model_list route by its LiteLLM model_name, plus its x-limits
 anchor if no other route still references it. Refuses to remove:
-  - a discovered route (managed by ai-litellm sync)
-  - the codex-auto-review functional slug (required by codex review)
+  - a discovered route (managed by claude-litellm sync)
   - a local route (api_key: none; remove via runtime discovery instead)
-  - a surface still referenced by a Claude tier alias or a Codex catalog entry
+  - a surface still referenced by a Claude tier alias
   --dry-run              Print the plan without writing anything or syncing.
 
 Set AI_LITELLM_SKIP_SYNC=1 to write everything but skip the closing sync.
@@ -3777,7 +3719,7 @@ EOF
         ;;
       *)
         if [[ -n "$surface" ]]; then
-          echo "Usage: ai-litellm model remove <surface> [--dry-run]" >&2
+          echo "Usage: claude-litellm model remove <surface> [--dry-run]" >&2
           return 1
         fi
         surface="$1"
@@ -3787,22 +3729,18 @@ EOF
   done
 
   if [[ -z "$surface" ]]; then
-    echo "Usage: ai-litellm model remove <surface> [--dry-run]" >&2
+    echo "Usage: claude-litellm model remove <surface> [--dry-run]" >&2
     return 1
   fi
 
-  # Reference checks reuse the existing harness helpers (same descriptor/path
-  # resolution as ai_litellm_harness_alias_set and model add --codex) rather
-  # than re-deriving settings-file lookup here.
+  # Reference checks reuse the existing harness helpers rather than re-deriving
+  # settings-file lookup here.
   local claude_alias_json
   claude_alias_json="$(ai_litellm_harness_alias_json claude 2>/dev/null)"
   [[ -n "$claude_alias_json" ]] || claude_alias_json="[]"
 
-  local codex_descriptor=""
-  codex_descriptor="$(ai_litellm_harness_descriptor codex 2>/dev/null)" || codex_descriptor=""
-
-  ai_litellm_ruby -rjson -ryaml - "$AI_LITELLM_CONFIG" "$surface" "$dry_run" "$claude_alias_json" "$codex_descriptor" <<'RUBY'
-config_path, surface, dry_run_raw, claude_alias_raw, codex_descriptor_path = ARGV
+  ai_litellm_ruby -rjson -ryaml - "$AI_LITELLM_CONFIG" "$surface" "$dry_run" "$claude_alias_json" <<'RUBY'
+config_path, surface, dry_run_raw, claude_alias_raw = ARGV
 dry_run = dry_run_raw == "1"
 
 # Mirrors the yaml_scalar helper in ai_litellm_model_add: bare for
@@ -3846,17 +3784,6 @@ end
 claude_aliases = (JSON.parse(claude_alias_raw) rescue [])
 claude_aliases = [] unless claude_aliases.is_a?(Array)
 
-codex_catalog =
-  if codex_descriptor_path.to_s.empty?
-    []
-  else
-    begin
-      Array(JSON.parse(File.read(codex_descriptor_path)).dig("models", "catalogEntries"))
-    rescue
-      []
-    end
-  end
-
 raw = File.read(config_path)
 config = (YAML.load_file(config_path, aliases: true) rescue YAML.load_file(config_path))
 
@@ -3871,18 +3798,16 @@ start = lines.index { |l| l.match?(name_pattern) }
 abort("cannot locate model_list route for #{surface} in #{config_path}") unless start
 
 # Step 2: guards (discovered block, functional slug, local runtime route).
-idx_begin = lines.index { |l| l.match?(/^# BEGIN ai-litellm discovered local routes/) }
-idx_end   = lines.index { |l| l.match?(/^# END ai-litellm discovered local routes/) }
+idx_begin = lines.index { |l| l.match?(/^# BEGIN claude-litellm discovered local routes/) }
+idx_end   = lines.index { |l| l.match?(/^# END claude-litellm discovered local routes/) }
 if idx_begin && idx_end && start > idx_begin && start < idx_end
   abort("#{surface}: discovered route -- managed by runtime discovery")
 end
 
-abort("#{surface}: functional slug required by codex review") if surface == "codex-auto-review"
-
 api_key = target.dig("litellm_params", "api_key").to_s
 abort("#{surface}: local route -- remove via runtime") if api_key == "none"
 
-# Step 3: reference checks (claude tier aliases, codex catalogEntries).
+# Step 3: Claude tier reference checks.
 backend = target.dig("litellm_params", "model").to_s
 provider_id = backend.sub(%r{\Aopenrouter/}, "")
 
@@ -3890,10 +3815,6 @@ ref_tiers = claude_aliases.select do |row|
   row["model"].to_s == surface || (!provider_id.empty? && row["direct"].to_s == provider_id)
 end.map { |row| row["tier"].to_s }
 abort("#{surface}: referenced by tier #{ref_tiers.join(", ")}; reassign the tier first") unless ref_tiers.empty?
-
-if codex_catalog.any? { |e| e["slug"].to_s == surface }
-  abort("#{surface}: in codex catalogEntries; remove --codex wiring first")
-end
 
 # Step 4: anchor determination.
 finish = block_finish(lines, start)
@@ -3916,7 +3837,7 @@ if orphaned
   end
 end
 
-puts "ai-litellm model remove #{surface}#{dry_run ? " (dry-run)" : ""}"
+puts "claude-litellm model remove #{surface}#{dry_run ? " (dry-run)" : ""}"
 puts "- backend: #{backend}"
 if anchor_name
   if orphaned
@@ -3955,7 +3876,7 @@ RUBY
   (( dry_run )) && return 0
 
   if [[ -n "${AI_LITELLM_SKIP_SYNC:-}" ]]; then
-    echo "ai-litellm model remove: AI_LITELLM_SKIP_SYNC set; skipping sync (run ai-litellm sync to apply)"
+    echo "claude-litellm model remove: AI_LITELLM_SKIP_SYNC set; skipping sync (run claude-litellm sync to apply)"
     return 0
   fi
 
@@ -4018,10 +3939,19 @@ def provider_default(entry):
     return str((entry.get("model_info") or {}).get("reasoning_default") or "-")
 
 
-def local_capability(backend):
+def local_capability(entry, backend):
     params = []
     supports = False
     err = None
+    litellm_params = entry.get("litellm_params") or {}
+    model_info = entry.get("model_info") or {}
+    # Capability inspection must be pure/offline. LiteLLM's ChatGPT capability
+    # helper can call get_access_token(), which starts device OAuth in the
+    # unpatched CLI process. OAuth routes use our validated registry contract.
+    if backend.startswith("chatgpt/") or litellm_params.get("use_xai_oauth") is True:
+        efforts = model_info.get("x_reasoning_efforts") or []
+        params = ["reasoning_effort"] if efforts else []
+        return model_info.get("supports_reasoning") is True, params, "oauth-registry"
     try:
         supports = bool(litellm.supports_reasoning(model=backend))
     except Exception as exc:
@@ -4092,9 +4022,11 @@ for entry in config.get("model_list") or []:
         continue
     mi = entry.get("model_info") or {}
     declared = mi.get("supports_reasoning") is True
-    local_supported, params, err = local_capability(backend)
+    local_supported, params, err = local_capability(entry, backend)
     local_label = "yes" if local_supported else "no"
-    if err and not local_supported:
+    if err == "oauth-registry":
+        local_label = "registry(oauth)"
+    elif err and not local_supported:
         local_label = f"no({err})"
     rows.append({
         "model": name,
@@ -4158,19 +4090,44 @@ entry = Array(config["model_list"]).find { |item| item["model_name"] == target }
 abort("Unknown LiteLLM model_name: #{target}") unless entry
 supports = entry.dig("model_info", "supports_reasoning") == true
 abort("Model does not declare supports_reasoning: true: #{target}") unless supports
-backend = entry.dig("litellm_params", "model").to_s
-provider = backend.split("/", 2).first
-allowed =
-  case provider
-  when "openrouter"
-    %w[none minimal low medium high xhigh]
-  when "openai"
-    %w[minimal low medium high]
-  else
-    %w[none minimal low medium high xhigh max]
-  end
+allowed = entry.dig("model_info", "x_reasoning_efforts")
+abort("Model does not publish configurable reasoning effort levels: #{target}") unless allowed.is_a?(Array) && !allowed.empty?
+valid = %w[none minimal low medium high xhigh max]
+unknown = allowed.map(&:to_s) - valid
+abort("Invalid configured reasoning effort levels for #{target}: #{unknown.join(", ")}") unless unknown.empty?
 puts allowed.join(" ")
 ' "$AI_LITELLM_CONFIG" "$model"
+}
+
+ai_litellm_reasoning_effort_metadata_ok() {
+  ai_litellm_ruby -ryaml -e '
+config = (YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))
+valid = %w[none minimal low medium high xhigh max]
+errors = []
+Array(config["model_list"]).each do |entry|
+  name = entry["model_name"].to_s
+  info = entry["model_info"] || {}
+  efforts = info["x_reasoning_efforts"]
+  unless efforts.is_a?(Array)
+    errors << "#{name}: model_info.x_reasoning_efforts must be an array"
+    next
+  end
+  values = efforts.map(&:to_s)
+  errors << "#{name}: duplicate x_reasoning_efforts" unless values.uniq == values
+  unknown = values - valid
+  errors << "#{name}: invalid x_reasoning_efforts #{unknown.join(",")}" unless unknown.empty?
+  supports = info["supports_reasoning"] == true
+  errors << "#{name}: effort levels require supports_reasoning=true" if !supports && !values.empty?
+  allowed_params = Array(entry.dig("litellm_params", "allowed_openai_params")).map(&:to_s)
+  if allowed_params.include?("reasoning_effort") && values.empty?
+    errors << "#{name}: reasoning_effort passthrough requires explicit effort levels"
+  end
+end
+unless errors.empty?
+  errors.each { |error| warn error }
+  exit 1
+end
+' "$AI_LITELLM_CONFIG"
 }
 
 ai_litellm_model_reasoning_allowed_json() {
@@ -4184,12 +4141,12 @@ ai_litellm_model_reasoning_update() {
   local model="$2"
   local effort="${3:-}"
   if [[ -z "$mode" || -z "$model" ]]; then
-    echo "Usage: ai-litellm model reasoning set <model> <effort>" >&2
-    echo "       ai-litellm model reasoning unset <model>" >&2
+    echo "Usage: claude-litellm model reasoning set <model> <effort>" >&2
+    echo "       claude-litellm model reasoning unset <model>" >&2
     return 1
   fi
   if [[ "$mode" == "set" && -z "$effort" ]]; then
-    echo "Usage: ai-litellm model reasoning set <model> <effort>" >&2
+    echo "Usage: claude-litellm model reasoning set <model> <effort>" >&2
     return 1
   fi
   model="$(ai_litellm_model_resolve "$model" 2>/dev/null)" || {
@@ -4284,7 +4241,7 @@ STDOUT.puts(mode == "set" ? "Applied to: #{targets.join(", ")}" : "Cleared: #{ta
   else
     echo "Cleared provider reasoning default for $model's backend"
   fi
-  echo "Run 'ai-litellm sync' to apply it to the running proxy."
+  echo "Run 'claude-litellm sync' to apply it to the running proxy."
 }
 
 ai_litellm_model_reasoning_set() {
@@ -4324,7 +4281,7 @@ ai_litellm_model_reasoning_probe() {
   local model="$1"
   local effort="${2:-xhigh}"
   if [[ -z "$model" ]]; then
-    echo "Usage: ai-litellm model reasoning probe <model> [effort]" >&2
+    echo "Usage: claude-litellm model reasoning probe <model> [effort]" >&2
     return 1
   fi
 
@@ -4472,7 +4429,7 @@ end
 
 def adapter_default_control(adapter)
   case adapter
-  when "claude-code", "codex-cli"
+  when "claude-code"
     "intent"
   else
     "none"
@@ -4481,8 +4438,6 @@ end
 
 def adapter_default_effort(adapter, descriptor)
   case adapter
-  when "codex-cli"
-    descriptor.dig("adapterConfig", "modelReasoningEffort") || "auto"
   when "claude-code"
     "auto"
   else
@@ -4507,10 +4462,8 @@ def add_row(rows, harness, selection, resolved, descriptor, registry)
   reasoning = descriptor.dig("adapterConfig", "reasoning") || {}
   control = reasoning["control"] || adapter_default_control(adapter)
   effort = reasoning["effort"] || adapter_default_effort(adapter, descriptor)
-  if adapter == "codex-cli"
-    effort = descriptor.dig("adapterConfig", "modelReasoningEffort") || effort
-  elsif adapter == "claude-code"
-    settings_arg = read_json(descriptor.dig("paths", "settingsArg"))
+  if adapter == "claude-code"
+    settings_arg = read_json(descriptor.dig("paths", "settingsArgProxy"))
     effort = settings_arg["effortLevel"] || effort
   end
   provider_support = supports_reasoning(registry, resolved)
@@ -4552,27 +4505,6 @@ descriptor_paths(harness_dir).each do |path|
     tiers.each do |tier|
       add_row(rows, harness, tier, aliases[tier], descriptor, registry)
     end
-  when "codex-cli"
-    selections = []
-    default = descriptor.dig("models", "default")
-    selections << ["default(#{default})", default] if default
-    settings = read_json(descriptor.dig("paths", "settings"))
-    Array((settings["aliases"] || {}).values).uniq.each { |model| selections << [model, model] }
-    Array(descriptor.dig("models", "catalogEntries")).each do |entry|
-      selections << [entry["slug"], entry["slug"]] if entry["slug"]
-    end
-    registry.keys.grep(/^codex-/).each { |model| selections << [model, model] }
-    # Local-runtime routes are marked by api_key: none (name-independent — naming
-    # never decides runtime membership; see ai_litellm_model_runtime).
-    registry.each { |model, entry| selections << [model, model] if entry.dig("litellm_params", "api_key").to_s == "none" }
-    seen = Set.new
-    selections.each do |selection, model|
-      next unless model && registry.key?(model)
-      key = [selection, model]
-      next if seen.include?(key)
-      seen.add(key)
-      add_row(rows, harness, selection, model, descriptor, registry)
-    end
   else
     default = descriptor.dig("models", "default")
     add_row(rows, harness, "default(#{default})", default, descriptor, registry) if default
@@ -4596,12 +4528,12 @@ ai_litellm_harness_reasoning_update() {
   local harness="$2"
   local effort="${3:-}"
   if [[ -z "$mode" || -z "$harness" ]]; then
-    echo "Usage: ai-litellm harness reasoning set <name> <effort>" >&2
-    echo "       ai-litellm harness reasoning unset <name>" >&2
+    echo "Usage: claude-litellm harness reasoning set <name> <effort>" >&2
+    echo "       claude-litellm harness reasoning unset <name>" >&2
     return 1
   fi
   if [[ "$mode" == "set" && -z "$effort" ]]; then
-    echo "Usage: ai-litellm harness reasoning set <name> <effort>" >&2
+    echo "Usage: claude-litellm harness reasoning set <name> <effort>" >&2
     return 1
   fi
 
@@ -4664,20 +4596,6 @@ const adapterReasoning = {
         notes: "User-provided --effort at launch overrides this descriptor default."
       };
     }
-  },
-  "codex-cli": {
-    allowed: ["low", "medium", "high", "xhigh"],
-    unsetEffort: "xhigh",
-    build(value) {
-      adapterConfig.modelReasoningEffort = value;
-      return {
-        control: "intent",
-        source: "codex-model_reasoning_effort",
-        effort: value,
-        wire: "config:model_reasoning_effort",
-        confidence: "configured"
-      };
-    }
   }
 };
 
@@ -4708,7 +4626,7 @@ try {
   elif [[ "$mode" == "unset" ]]; then
     echo "Reset harness reasoning default: $harness"
   fi
-  [[ "$mode" == "allowed" ]] || echo "Run 'ai-litellm sync' to regenerate derived configs where needed."
+  [[ "$mode" == "allowed" ]] || echo "Run 'claude-litellm sync' to regenerate derived configs where needed."
 }
 
 ai_litellm_harness_reasoning_set() {
@@ -4725,42 +4643,15 @@ ai_litellm_harness_reasoning_allowed_json() {
 
 ai_litellm_context_matrix() {
   local filter="$1"
-  ai_litellm_ruby -rjson -ryaml -ropen3 -e '
+  ai_litellm_ruby -rjson -ryaml -e '
 config_path, settings_path, harness_dir, home, base_url, api_base_url, filter, context_obs_seed, context_obs_file = ARGV
 filter ||= ""
-
-NATIVE_CODEX_MODEL = "gpt-5.5"
-NATIVE_CODEX_PROVIDER_MODEL = "openai/gpt-5.5"
-NATIVE_CODEX_PRODUCT_CONTEXT = 400000
-NATIVE_CODEX_OUTPUT_TOKENS = 128000
-OPENAI_API_GPT55_CONTEXT = 1050000
-OPENAI_API_GPT55_OUTPUT_TOKENS = 128000
 
 def read_json(path)
   return nil unless path && File.file?(path)
   JSON.parse(File.read(path))
 rescue
   nil
-end
-
-def toml_value(path, key)
-  return nil unless path && File.file?(path)
-  File.read(path)[/^\s*#{Regexp.escape(key)}\s*=\s*"([^"]+)"/, 1]
-rescue
-  nil
-end
-
-def run_json(*cmd)
-  out, status = Open3.capture2e(*cmd)
-  return nil unless status.success?
-  JSON.parse(out)
-rescue
-  nil
-end
-
-def codex_model(cmd)
-  payload = run_json(*cmd)
-  Array(payload && payload["models"]).find { |m| m["slug"] == NATIVE_CODEX_MODEL }
 end
 
 def model_config_context(models_dir, model)
@@ -4889,70 +4780,6 @@ pre_call = config.dig("router_settings", "enable_pre_call_checks") == true
 router_enforcement = pre_call ? "LiteLLM pre-call" : "provider-only"
 
 rows = []
-
-native_auth = read_json(File.join(home, ".codex", "auth.json")) || {}
-auth_lane =
-  if native_auth["auth_mode"]
-    native_auth["auth_mode"].to_s
-  elsif native_auth["tokens"]
-    "chatgpt"
-  elsif native_auth["OPENAI_API_KEY"]
-    "api-key"
-  else
-    "unknown"
-  end
-
-active_codex = codex_model(["codex", "debug", "models"])
-bundled_codex = codex_model(["codex", "debug", "models", "--bundled"])
-active_ctx = active_codex && active_codex["context_window"]
-active_pct = active_codex && active_codex["effective_context_window_percent"]
-active_effective = active_ctx && active_pct ? (active_ctx.to_f * active_pct.to_f / 100.0).floor : nil
-bundled_ctx = bundled_codex && bundled_codex["context_window"]
-native_config = File.join(home, ".codex", "config.toml")
-native_override = toml_value(native_config, "model_catalog_json") || toml_value(native_config, "model_context_window")
-native_confidence = native_override ? "local-override" : "official+bundled"
-
-add_row(rows,
-  surface: "codex-app-oauth",
-  selection: "default(#{NATIVE_CODEX_MODEL})",
-  auth_lane: auth_lane,
-  provider_model: NATIVE_CODEX_PROVIDER_MODEL,
-  budget_kind: "harness-session",
-  declared_context: NATIVE_CODEX_PRODUCT_CONTEXT,
-  declared_output: NATIVE_CODEX_OUTPUT_TOKENS,
-  configured_context: active_ctx || bundled_ctx,
-  observed_context: nil,
-  effective_input_budget: active_effective,
-  enforcement_layer: "Codex product",
-  source_confidence: "#{native_confidence}; app-unprobed")
-
-add_row(rows,
-  surface: "codex-cli-oauth",
-  selection: "default(#{NATIVE_CODEX_MODEL})",
-  auth_lane: auth_lane,
-  provider_model: NATIVE_CODEX_PROVIDER_MODEL,
-  budget_kind: "harness-session",
-  declared_context: NATIVE_CODEX_PRODUCT_CONTEXT,
-  declared_output: NATIVE_CODEX_OUTPUT_TOKENS,
-  configured_context: active_ctx || bundled_ctx,
-  observed_context: active_effective,
-  effective_input_budget: active_effective,
-  enforcement_layer: "Codex catalog",
-  source_confidence: native_confidence)
-
-add_row(rows,
-  surface: "codex-cli-api",
-  selection: NATIVE_CODEX_MODEL,
-  auth_lane: "api-key",
-  provider_model: NATIVE_CODEX_PROVIDER_MODEL,
-  budget_kind: "provider-declared",
-  declared_context: OPENAI_API_GPT55_CONTEXT,
-  declared_output: OPENAI_API_GPT55_OUTPUT_TOKENS,
-  configured_context: nil,
-  observed_context: nil,
-  effective_input_budget: nil,
-  enforcement_layer: "OpenAI API",
-  source_confidence: "official-api; inactive")
 
 def positive_int(value)
   n = Integer(value)
@@ -5201,63 +5028,6 @@ ai_litellm_context_matrix_json() {
   AI_LITELLM_MATRIX_JSON=1 ai_litellm_context_matrix "$@" 2>/dev/null || printf '[]'
 }
 
-ai_litellm_context_probe_latest_codex_session() {
-  ai_litellm_ruby -rjson -e '
-home = ARGV[0]
-files = Dir[File.join(home, ".codex", "sessions", "**", "*.jsonl")].sort_by { |p| File.mtime(p) }.reverse
-files.each do |path|
-  File.foreach(path) do |line|
-    begin
-      item = JSON.parse(line)
-      payload = item["payload"] || {}
-      next unless payload["type"] == "task_started" && payload.key?("model_context_window")
-      puts "#{path}: model_context_window=#{payload["model_context_window"]}"
-      exit 0
-    rescue JSON::ParserError
-    end
-  end
-end
-exit 1
-' "$HOME"
-}
-
-ai_litellm_context_probe_codex_native() {
-  local codex_command
-  codex_command="$(ai_litellm_harness_json codex command 2>/dev/null || printf 'codex')"
-  echo "Surface: $1"
-  echo "Auth:"
-  if [[ -f "$HOME/.codex/auth.json" ]]; then
-    jq '{auth_mode, has_api_key:(.OPENAI_API_KEY!=null and .OPENAI_API_KEY!=""), has_tokens:(.tokens!=null)}' "$HOME/.codex/auth.json"
-  else
-    echo "  missing $HOME/.codex/auth.json"
-  fi
-  echo
-  echo "Active Codex gpt-5.5 metadata:"
-  if command -v "$codex_command" >/dev/null 2>&1; then
-    "$codex_command" debug models | jq '.models[] | select(.slug=="gpt-5.5") | {slug,context_window,max_context_window,effective_context_window_percent}'
-  else
-    echo "  skipped: $codex_command not installed"
-  fi
-  echo
-  echo "Bundled Codex gpt-5.5 metadata:"
-  if command -v "$codex_command" >/dev/null 2>&1; then
-    "$codex_command" debug models --bundled | jq '.models[] | select(.slug=="gpt-5.5") | {slug,context_window,max_context_window,effective_context_window_percent}'
-  else
-    echo "  skipped: $codex_command not installed"
-  fi
-  echo
-  echo "Active native context overrides:"
-  rg -n '^[[:space:]]*(model_catalog_json|model_context_window)[[:space:]]*=' "$HOME/.codex/config.toml" 2>/dev/null || echo "  none"
-  echo
-  echo "Latest recorded native Codex session window:"
-  ai_litellm_context_probe_latest_codex_session 2>/dev/null || echo "  unknown"
-  echo "  note: this is historical session evidence; fresh sessions follow the active metadata above."
-  if [[ "$1" == "codex-app-oauth" ]]; then
-    echo
-    echo "Note: Codex App GUI startup is not invoked by this probe; this row uses shared native config plus local session evidence."
-  fi
-}
-
 ai_litellm_context_litellm_surfaces() {
   [[ -d "$AI_LITELLM_HARNESSES_DIR" ]] || return 0
   node -e '
@@ -5282,7 +5052,6 @@ ai_litellm_context_runtime_surfaces() {
 }
 
 ai_litellm_context_surfaces() {
-  printf '%s\n' codex-app-oauth codex-cli-oauth codex-cli-api
   ai_litellm_context_litellm_surfaces
   printf '%s\n' claude-code-native
   ai_litellm_context_runtime_surfaces
@@ -5401,7 +5170,7 @@ ai_litellm_context_probe_record() {
   local surface="${1:-}" selection="${2:-}" model="${3:-}" tokens="${4:-}"
   shift $(( $# < 4 ? $# : 4 ))
   if [[ -z "$surface" || -z "$selection" || -z "$model" || -z "$tokens" ]]; then
-    echo "Usage: ai-litellm context probe record <surface> <selection> <model> <observed_input_tokens> [--provider-model model] [--status lower_bound|upper_bound|observed] [--cost-usd n] [--notes text]" >&2
+    echo "Usage: claude-litellm context probe record <surface> <selection> <model> <observed_input_tokens> [--provider-model model] [--status lower_bound|upper_bound|observed] [--cost-usd n] [--notes text]" >&2
     return 1
   fi
 
@@ -5522,7 +5291,7 @@ for (const file of files) {
 ai_litellm_context_probe() {
   local surface="$1"
   if [[ -z "$surface" ]]; then
-    echo "Usage: ai-litellm context probe <surface|all>|record <surface> <selection> <model> <observed_input_tokens>" >&2
+    echo "Usage: claude-litellm context probe <surface|all>|record <surface> <selection> <model> <observed_input_tokens>" >&2
     echo "Surfaces: $(ai_litellm_context_surfaces | paste -sd ' ' -)" >&2
     return 1
   fi
@@ -5540,16 +5309,7 @@ ai_litellm_context_probe() {
       done
       return $failed
       ;;
-    codex-app-oauth|codex-cli-oauth)
-      ai_litellm_context_probe_codex_native "$surface"
-      ;;
-    codex-cli-api)
-      echo "Surface: codex-cli-api"
-      echo "Official API budget: gpt-5.5 context=1050000 output=128000"
-      echo "Local state: API-key lane is not active unless $HOME/.codex/auth.json auth_mode is api-key."
-      [[ -f "$HOME/.codex/auth.json" ]] && jq '{auth_mode, has_api_key:(.OPENAI_API_KEY!=null and .OPENAI_API_KEY!=""), has_tokens:(.tokens!=null)}' "$HOME/.codex/auth.json"
-      ;;
-    codex-litellm|claude-litellm)
+    claude-litellm)
       ai_litellm_context_probe_litellm_surface "$surface"
       ;;
     claude-code-native)
@@ -5583,26 +5343,6 @@ ai_litellm_context_doctor_check() {
 
 ai_litellm_context_doctor_warn() {
   echo "warn $1"
-}
-
-ai_litellm_context_native_no_override() {
-  ! rg -q '^[[:space:]]*(model_catalog_json|model_context_window)[[:space:]]*=' "$HOME/.codex/config.toml" 2>/dev/null
-}
-
-ai_litellm_context_no_long_artifacts() {
-  [[ ! -e "$HOME/.codex/api-long.config.toml" &&
-     ! -e "$HOME/.codex/model-catalog-api-long.json" &&
-     ! -e "$HOME/.codex/model-catalog-codex-safe.json" &&
-     ! -e "$HOME/.codex/model-catalog-local.json" ]]
-}
-
-ai_litellm_context_codex_matches_bundled() {
-  local active bundled codex_command
-  codex_command="$(ai_litellm_harness_json codex command 2>/dev/null || printf 'codex')"
-  command -v "$codex_command" >/dev/null 2>&1 || return 0
-  active="$("$codex_command" debug models | jq -r '.models[] | select(.slug=="gpt-5.5") | [.context_window,.max_context_window,.effective_context_window_percent] | @tsv' 2>/dev/null)" || return 1
-  bundled="$("$codex_command" debug models --bundled | jq -r '.models[] | select(.slug=="gpt-5.5") | [.context_window,.max_context_window,.effective_context_window_percent] | @tsv' 2>/dev/null)" || return 1
-  [[ -n "$active" && "$active" == "$bundled" ]]
 }
 
 ai_litellm_context_pre_call_enabled() {
@@ -5738,7 +5478,7 @@ text = File.read(ARGV[0])
 # Discovered local routes are generated with inline model_info derived from
 # runtimes.<rt> defaults/overrides; the anchor policy applies to
 # hand-maintained entries only.
-text = text.gsub(/^# BEGIN ai-litellm discovered local routes\n.*?^# END ai-litellm discovered local routes\n/m, "")
+text = text.gsub(/^# BEGIN claude-litellm discovered local routes\n.*?^# END claude-litellm discovered local routes\n/m, "")
 entries = text.split(/\n(?=  - model_name:\s*)/)
 errors = []
 entries.each do |entry|
@@ -5934,6 +5674,35 @@ end
   done
 }
 
+# Fail only on dangerous overclaims: a configured numeric ceiling above the
+# provider-published ceiling, or declared reasoning when the provider reports
+# it unsupported. Conservative underclaims and metadata gaps remain warnings.
+ai_litellm_context_provider_capability_no_dangerous_overclaim() {
+  local report
+  report="$(ai_litellm_model_refresh_capabilities --json 2>/dev/null)" || return 0
+  print -r -- "$report" | ai_litellm_ruby -rjson -e '
+payload = JSON.parse(STDIN.read) rescue {}
+errors = []
+Array(payload["rows"]).each do |row|
+  %w[input output].each do |dim|
+    data = row[dim] || {}
+    configured = data["configured"]
+    provider = data["provider"]
+    next unless configured.is_a?(Numeric) && provider.is_a?(Numeric)
+    if configured > provider
+      errors << "#{row["alias"]} #{dim} configured=#{configured} provider=#{provider}"
+    end
+  end
+  reasoning = row["reasoning"] || {}
+  if reasoning["configured"] == true && reasoning["provider"] == false
+    errors << "#{row["alias"]} reasoning configured=true provider=false"
+  end
+end
+errors.each { |error| warn "dangerous provider capability overclaim: #{error}" }
+exit(errors.empty? ? 0 : 1)
+'
+}
+
 ai_litellm_context_warn_output_clamp() {
   ai_litellm_context_gateway_clamp_configured >/dev/null 2>&1 && return 0
   ai_litellm_ruby -ryaml -e '
@@ -5979,10 +5748,7 @@ if (errors.length) {
 
 ai_litellm_context_doctor() {
   local failed=0
-  echo "ai-litellm context doctor"
-  ai_litellm_context_doctor_check "native Codex has no active local context override" ai_litellm_context_native_no_override || failed=1
-  ai_litellm_context_doctor_check "native Codex long-context artifacts are not active" ai_litellm_context_no_long_artifacts || failed=1
-  ai_litellm_context_doctor_check "native Codex active gpt-5.5 catalog matches bundled catalog" ai_litellm_context_codex_matches_bundled || failed=1
+  echo "claude-litellm context doctor"
   ai_litellm_context_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
   ai_litellm_context_doctor_check "gateway output clamp policy valid" ai_litellm_context_gateway_clamp_policy_ok || failed=1
   ai_litellm_context_doctor_check "output reservation policy aligned" ai_litellm_context_output_reservation_aligned || failed=1
@@ -5991,9 +5757,9 @@ ai_litellm_context_doctor() {
   ai_litellm_context_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
   ai_litellm_context_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
   ai_litellm_context_doctor_check "harness context surfaces are unique" ai_litellm_context_descriptor_surfaces_ok || failed=1
-  ai_litellm_context_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_context_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
   ai_litellm_context_doctor_check "context matrix renders" ai_litellm_quiet ai_litellm_context_matrix || failed=1
+  ai_litellm_context_doctor_check "no dangerous provider capability overclaim" ai_litellm_context_provider_capability_no_dangerous_overclaim || failed=1
   ai_litellm_context_warn_omlx_policy_cap
   ai_litellm_context_warn_owned_policy_output_source
   ai_litellm_context_warn_provider_capability_drift
@@ -6012,7 +5778,7 @@ ai_litellm_cmd_proxy() {
     stop)      ai_litellm_stop ;;
     restart)   ai_litellm_restart ;;
     logs)      ai_litellm_logs "$@" ;;
-    *) echo "Usage: ai-litellm proxy status|start|stop|restart|logs [lines] (diagnostics: run doctor --proxy)" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm proxy status|start|stop|restart|logs [lines] (diagnostics: run doctor --proxy)" >&2; return 1 ;;
   esac
 }
 
@@ -6043,7 +5809,7 @@ ai_litellm_cmd_harness() {
         *)   ai_litellm_harness_alias_json "${1:-claude}" ;;
       esac
       ;;
-    *) echo "Usage: ai-litellm harness list|info <name>|launch <name> [model] [args...]|reasoning [name]|reasoning set <name> <effort>|reasoning unset <name>|reasoning allowed <name>|alias get <name>|alias set <name> <tier> <model>" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm harness list|info <name>|launch <name> [model] [args...]|reasoning [name]|reasoning set <name> <effort>|reasoning unset <name>|reasoning allowed <name>|alias get <name>|alias set <name> <tier> <model>" >&2; return 1 ;;
   esac
 }
 
@@ -6056,7 +5822,7 @@ ai_litellm_cmd_runtime() {
       elif [[ "${2:-}" == "--json" ]]; then ai_litellm_runtime_status_json "$1"
       else ai_litellm_runtime_status "$@"; fi
       ;;
-    *) echo "Usage: ai-litellm runtime list|status [name] (diagnostics: run doctor --runtime <name>)" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm runtime list|status [name] (diagnostics: run doctor --runtime <name>)" >&2; return 1 ;;
   esac
 }
 
@@ -6094,10 +5860,10 @@ ai_litellm_cmd_model() {
         set)     shift; ai_litellm_model_reasoning_set "$@" ;;
         unset)   shift; ai_litellm_model_reasoning_unset "$@" ;;
         allowed) shift; ai_litellm_model_reasoning_allowed_json "${1:-}" ;;
-        *)       echo "Usage: ai-litellm model reasoning probe <model> [effort]|set <model> <effort>|unset <model>|allowed <model>" >&2; return 1 ;;
+        *)       echo "Usage: claude-litellm model reasoning probe <model> [effort]|set <model> <effort>|unset <model>|allowed <model>" >&2; return 1 ;;
       esac
       ;;
-    *) echo "Usage: ai-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [--apply|--json|--check]|add <provider-id> [--name|--claude-tier|--codex|--dry-run]|remove <surface> [--dry-run]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|reasoning allowed <model>" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [--apply|--json|--check]|add <provider-id> [--name|--claude-tier|--dry-run]|remove <surface> [--dry-run]|reasoning probe <model> [effort]|reasoning set <model> <effort>|reasoning unset <model>|reasoning allowed <model>" >&2; return 1 ;;
   esac
 }
 
@@ -6108,7 +5874,7 @@ ai_litellm_cmd_key() {
       if [[ "${1:-}" == "--json" ]]; then ai_litellm_key_status_json; else ai_litellm_key_status; fi
       ;;
     set)       ai_litellm_key_set "$@" ;;
-    *) echo "Usage: ai-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]" >&2; return 1 ;;
   esac
 }
 
@@ -6132,7 +5898,7 @@ ai_litellm_cmd_context() {
       ;;
     probe)     ai_litellm_context_probe "$@" ;;
     observations) ai_litellm_context_observations "$@" ;;
-    *) echo "Usage: ai-litellm context matrix [filter]|probe <surface|all>|observations [filter] (diagnostics: run doctor --context)" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm context matrix [filter]|probe <surface|all>|observations [filter] (diagnostics: run doctor --context)" >&2; return 1 ;;
   esac
 }
 
@@ -6153,16 +5919,16 @@ ai_litellm_doctor_reasoning_matrix_check() {
 
 ai_litellm_reasoning_doctor() {
   local failed=0
-  echo "ai-litellm reasoning doctor"
+  echo "claude-litellm reasoning doctor"
+  ai_litellm_doctor_check "model-specific effort metadata valid" ai_litellm_reasoning_effort_metadata_ok || failed=1
   ai_litellm_doctor_reasoning_matrix_check || failed=1
-  ai_litellm_doctor_check "harness reasoning configs match descriptors" ai_litellm_doctor_reasoning_sync || failed=1
   ai_litellm_doctor_reasoning_capability_truth
   return $failed
 }
 
 ai_litellm_model_policy_audit() {
   local failed=0
-  echo "ai-litellm model policy audit"
+  echo "claude-litellm model policy audit"
   ai_litellm_doctor_check "model limits render" ai_litellm_quiet ai_litellm_limits_table || failed=1
   ai_litellm_doctor_check "model_info uses x-limits anchors" ai_litellm_model_info_anchor_refs_ok || failed=1
   ai_litellm_doctor_check "LiteLLM pre-call context enforcement enabled" ai_litellm_context_pre_call_enabled || failed=1
@@ -6173,7 +5939,6 @@ ai_litellm_model_policy_audit() {
   ai_litellm_doctor_check "gateway estimated-token cost guardrail configured" ai_litellm_context_gateway_cost_guardrail_configured || failed=1
   ai_litellm_doctor_check "context observations readable" ai_litellm_context_observations_ok || failed=1
   ai_litellm_doctor_check "harness output reservations leave input budget" ai_litellm_context_harness_reservations_ok || failed=1
-  ai_litellm_doctor_check "harness configs match single-source limits" ai_litellm_doctor_limit_sync || failed=1
   ai_litellm_doctor_check "context matrix renders" ai_litellm_quiet ai_litellm_context_matrix || failed=1
   ai_litellm_doctor_reasoning_matrix_check || failed=1
   ai_litellm_context_warn_omlx_policy_cap
@@ -6192,7 +5957,7 @@ ai_litellm_cmd_reasoning() {
       else ai_litellm_model_reasoning_table "$@"; fi
       ;;
     probe)     ai_litellm_model_reasoning_probe "$@" ;;
-    *) echo "Usage: ai-litellm reasoning matrix [model]|probe <model> [effort] (diagnostics: run doctor --reasoning)" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm reasoning matrix [model]|probe <model> [effort] (diagnostics: run doctor --reasoning)" >&2; return 1 ;;
   esac
 }
 
@@ -6217,7 +5982,7 @@ ai_litellm_cmd_doctor() {
     --reasoning)  ai_litellm_reasoning_doctor "$@" ;;
     --policy)     ai_litellm_model_policy_audit "$@" ;;
     --runtime)    ai_litellm_doctor_runtime "$@" ;;
-    *) echo "Usage: ai-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]" >&2; return 1 ;;
+    *) echo "Usage: claude-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]" >&2; return 1 ;;
   esac
 }
 
@@ -6227,7 +5992,7 @@ ai_litellm_cmd_doctor() {
 # (observability command; mirrors the empty-output honesty of the json API).
 ai_litellm_cmd_status() {
   if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != "--json" ]] }; then
-    echo "Usage: ai-litellm status [--json]" >&2
+    echo "Usage: claude-litellm status [--json]" >&2
     return 1
   fi
   if [[ "${1:-}" == "--json" ]]; then
@@ -6251,7 +6016,6 @@ try {
   if (input) process.stdout.write(input.replace(/^/gm, "  "));
 }
 '
-  echo "  codex default: $(ai_litellm_harness_json codex models.default 2>/dev/null || printf 'unknown')"
   echo
   ai_litellm_key_status
   echo
@@ -6261,31 +6025,30 @@ try {
 
 ai_litellm_usage() {
   cat <<'EOF'
-Usage: ai-litellm <group> <verb> [args]
+Usage: claude-litellm <group> <verb> [args]
 
-  Status:        ai-litellm status [--json]  Proxy/harness/runtime/key/capability one-shot summary
-  Proxy:         ai-litellm proxy status|start|stop|restart|logs [lines]
-  Harness:       ai-litellm harness list|info <name>|launch <name> [model] [args...]
-                 ai-litellm harness reasoning [name]
-                 ai-litellm harness reasoning set <name> <effort>
-                 ai-litellm harness reasoning unset <name>
-  Runtime:       ai-litellm runtime list|status [name]
-  Model:         ai-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [opts]
-                 ai-litellm model add <provider-id> [--name|--claude-tier|--codex|--dry-run]
-                 ai-litellm model remove <surface> [--dry-run]
-                 ai-litellm model reasoning probe <model> [effort]
-                 ai-litellm model reasoning set <model> <effort>
-                 ai-litellm model reasoning unset <model>
-  Context:       ai-litellm context matrix [filter]|probe <surface|all>|observations [filter]
-  Reasoning:     ai-litellm reasoning matrix [model]|probe <model> [effort]
-  Doctor:        ai-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]
-  Key:           ai-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]
-  Sync:          ai-litellm sync          Regenerate derived configs + reload proxy from the single source
-  Uninstall:     ai-litellm uninstall     Remove package directory and global shims
+  Status:        claude-litellm status [--json]  Proxy/harness/runtime/key/capability one-shot summary
+  Proxy:         claude-litellm proxy status|start|stop|restart|logs [lines]
+  Harness:       claude-litellm harness list|info <name>|launch <name> [model] [args...]
+                 claude-litellm harness reasoning [name]
+                 claude-litellm harness reasoning set <name> <effort>
+                 claude-litellm harness reasoning unset <name>
+  Runtime:       claude-litellm runtime list|status [name]
+  Model:         claude-litellm model list|info [model]|limits [model]|probe [model...]|refresh-capabilities [opts]
+                 claude-litellm model add <provider-id> [--name|--claude-tier|--dry-run]
+                 claude-litellm model remove <surface> [--dry-run]
+                 claude-litellm model reasoning probe <model> [effort]
+                 claude-litellm model reasoning set <model> <effort>
+                 claude-litellm model reasoning unset <model>
+  Context:       claude-litellm context matrix [filter]|probe <surface|all>|observations [filter]
+  Reasoning:     claude-litellm reasoning matrix [model]|probe <model> [effort]
+  Doctor:        claude-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]
+  Key:           claude-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]
+  Sync:          claude-litellm sync      Regenerate derived configs + reload proxy from the single source
+  Uninstall:     claude-litellm uninstall Remove package directory and global shim
 
 Reasoning effort values (not a command — pass to reasoning/harness set):
   OpenRouter none|minimal|low|medium|high|xhigh   Claude auto|low|medium|high|xhigh|max
-  Codex low|medium|high|xhigh
 EOF
 }
 
@@ -6308,7 +6071,7 @@ ai_litellm() {
     uninstall)    ai_litellm_uninstall "$@" ;;
 
     *)
-      echo "Unknown ai-litellm command: $cmd" >&2
+      echo "Unknown claude-litellm command: $cmd" >&2
       ai_litellm_usage >&2
       return 1
       ;;

@@ -289,10 +289,10 @@ def enforce_cost_guardrail(kwargs: dict[str, Any]) -> dict[str, Any]:
     if decision["allowed"]:
         return kwargs
     reason = "; ".join(decision["reasons"])
-    message = f"ai-litellm cost guardrail rejected request before provider dispatch: {reason}"
+    message = f"claude-litellm cost guardrail rejected request before provider dispatch: {reason}"
     if LiteLLMBadRequestError is not None:
         model = str(kwargs.get("model") or kwargs.get("deployment_model_name") or "unknown")
-        raise LiteLLMBadRequestError(message=message, model=model, llm_provider="ai-litellm")
+        raise LiteLLMBadRequestError(message=message, model=model, llm_provider="claude-litellm")
     raise GatewayCostGuardrailError(message)
 
 

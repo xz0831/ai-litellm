@@ -5,17 +5,23 @@ if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   source "$NVM_DIR/nvm.sh"
 fi
 
+_AI_LITELLM_ENTRYPOINT="${0:A}"
+
 _ai_litellm_resolve_fabric_home() {
-  if [[ -n "${AI_LITELLM_HOME:-}" ]]; then
-    print -r -- "$AI_LITELLM_HOME"
+  if [[ -n "${CLAUDE_LITELLM_ROOT:-}" ]]; then
+    print -r -- "$CLAUDE_LITELLM_ROOT"
     return
   fi
-  local script_dir="${0:A:h}"
+  local script_dir="${_AI_LITELLM_ENTRYPOINT:h}"
   if [[ -f "$script_dir/../config/ai-litellm/lib.zsh" ]]; then
     print -r -- "${script_dir:h}"
     return
   fi
-  print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}/ai-litellm"
+  if [[ -n "${AI_LITELLM_HOME:-}" ]]; then
+    print -r -- "$AI_LITELLM_HOME"
+    return
+  fi
+  print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}/claude-litellm"
 }
 
 export AI_LITELLM_HOME="$(_ai_litellm_resolve_fabric_home)"
