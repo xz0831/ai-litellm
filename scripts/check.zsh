@@ -998,7 +998,8 @@ assert_durable_reinstall_rejected() {
 # First tracked file: add a custom route with an explicit reasoning setting.
 ruby -e '
 path = ARGV.fetch(0)
-text = File.read(path)
+text = File.binread(path).force_encoding(Encoding::UTF_8)
+abort "litellm config is not valid UTF-8" unless text.valid_encoding?
 route = [
   "  - model_name: Durability-Test-openrouter",
   "    litellm_params:",
@@ -1010,7 +1011,7 @@ route = [
   "      x_reasoning_efforts: [low, medium, high]",
 ].join("\n") + "\n\n"
 abort "general_settings marker missing" unless text.sub!(/^general_settings:/, route + "general_settings:")
-File.write(path, text)
+File.binwrite(path, text)
 ' "$mutable_config"
 ruby -ryaml -e '(YAML.load_file(ARGV[0], aliases: true) rescue YAML.load_file(ARGV[0]))' "$mutable_config"
 
