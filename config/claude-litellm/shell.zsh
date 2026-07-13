@@ -400,6 +400,7 @@ _claude_litellm_validate_effort() {
 # refuse to launch if the shared settings surface carries backend routing
 # keys, and render the proxy --settings overlay.
 _claude_litellm_launch_prepare() {
+  typeset -g CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG=""
   # Overlay paths inherited from a pre-upgrade shell point inside the config
   # dir, where settings.json is now a shared symlink; rendering there would
   # chmod/replace the native file through the link. Reset such values.
@@ -422,7 +423,32 @@ _claude_litellm_launch_prepare() {
   esac
   ai_litellm_shared_env_links_ensure "$CLAUDE_LITELLM_HARNESS" "$CLAUDE_LITELLM_CLAUDE_CONFIG" || return $?
   ai_litellm_claude_shared_settings_lint "$CLAUDE_LITELLM_HARNESS" || return $?
-  ai_litellm_render_claude_settings "$CLAUDE_LITELLM_HARNESS" "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY"
+
+  # Freeze a private per-launch copy while holding the same mutation lock as
+  # `permissions set/reset`. Claude reads --settings after this function
+  # returns; passing the shared generated path directly would let a concurrent
+  # update change the permission mode between validation and process startup.
+  local lock_preowned=0 rc=0 launch_settings=""
+  [[ "${AI_LITELLM_USER_MUTATION_FD:-}" == <-> ]] && lock_preowned=1
+  ai_litellm_user_mutation_lock_acquire || return 1
+  ai_litellm_render_claude_settings "$CLAUDE_LITELLM_HARNESS" "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY" || rc=$?
+  if (( rc == 0 )); then
+    launch_settings="$(mktemp "${CLAUDE_LITELLM_SETTINGS_ARG_PROXY:h}/.overlay-settings-launch.XXXXXX")" || rc=$?
+  fi
+  if (( rc == 0 )); then
+    cp -p "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY" "$launch_settings" || rc=$?
+  fi
+  if (( rc == 0 )); then
+    chmod 600 "$launch_settings" || rc=$?
+  fi
+  if (( lock_preowned == 0 )); then
+    ai_litellm_user_mutation_lock_release
+  fi
+  if (( rc != 0 )); then
+    [[ -n "$launch_settings" ]] && rm -f "$launch_settings"
+    return $rc
+  fi
+  typeset -g CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG="$launch_settings"
 }
 
 _claude_litellm_assert_safe_passthrough() {
@@ -432,7 +458,7 @@ _claude_litellm_assert_safe_passthrough() {
     case "$arg" in
       --model|--model=*|--settings|--settings=*|--fallback-model|--fallback-model=*)
         echo "claude-litellm: $arg is managed by the wrapper and cannot be passed through." >&2
-        echo "Select a model with: claude-litellm <tier-or-registered-route> [claude args...]" >&2
+        echo "Select a model with: claude-litellm use <tier-or-registered-route> [claude args...]" >&2
         return 1
         ;;
     esac
@@ -459,7 +485,6 @@ _claude_litellm_launch_proxy() {
   _claude_litellm_require_oauth "$target_model" || return $?
   ai_litellm_model_provider_credentials_ready "$target_model" || return $?
   ai_litellm_start >/dev/null || return $?
-  _claude_litellm_launch_prepare || return $?
 
   local master_key
   master_key="$(ai_litellm_master_key)"
@@ -527,7 +552,7 @@ _claude_litellm_launch_proxy() {
     # and subagent surface to the route validated for this process; otherwise
     # /model or fallback selection could bypass OAuth/runtime/effort checks and
     # retain an incompatible token budget. Switch providers by exiting and
-    # relaunching `claude-litellm <route>`.
+    # relaunching `claude-litellm use <route>`.
     tier_model="$target_model"
     tier_display="$target_model"
     env_assignments+=(
@@ -553,8 +578,68 @@ _claude_litellm_launch_proxy() {
   reasoning_output="$(_claude_litellm_reasoning_args "$target_model" "$@")"
   [[ -n "$reasoning_output" ]] && claude_extra_args=("${(@f)reasoning_output}")
 
+  _claude_litellm_launch_prepare || return $?
+  local launch_rc=0 launch_settings="$CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG"
   ai_litellm_harness_exec_env "$CLAUDE_LITELLM_HARNESS" "${env_assignments[@]}" -- \
-    "$claude_command" --settings "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY" --model "$claude_model_arg" "${claude_extra_args[@]}" "$@"
+    "$claude_command" --settings "$launch_settings" --model "$claude_model_arg" "${claude_extra_args[@]}" "$@" || launch_rc=$?
+  rm -f "$launch_settings"
+  typeset -g CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG=""
+  return $launch_rc
+}
+
+_claude_litellm_use() {
+  if [[ -z "${1:-}" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF'
+Usage: claude-litellm use <tier-or-route> [claude args...]
+       claude-litellm use <registered-route> --default
+
+Launch one session with the selected route. --default runs the six live
+compatibility gates and, only on PASS, replaces the current default preset;
+it does not launch Claude and cloud routes may incur a small provider charge.
+EOF
+    [[ -n "${1:-}" ]] && return 0
+    return 1
+  fi
+
+  local selector="$1"
+  shift
+  local target_model
+  target_model="$(_claude_litellm_target_model_for_request "$selector")" || {
+    echo "Unknown claude-litellm tier, route, or provider model: $selector" >&2
+    echo "List selectable routes with: claude-litellm --list" >&2
+    return 1
+  }
+
+  if [[ "${1:-}" == "--default" ]]; then
+    shift
+    (( $# == 0 )) || {
+      echo "claude-litellm use: --default does not launch Claude or accept Claude arguments." >&2
+      echo "Run 'claude-litellm use $selector' after the default change completes." >&2
+      return 1
+    }
+    case "$selector" in
+      fable|opus|sonnet|haiku)
+        echo "claude-litellm use: --default requires a concrete registered route, not the '$selector' preset." >&2
+        echo "Choose the route name shown by 'claude-litellm --list'." >&2
+        return 1
+        ;;
+    esac
+    local default_tier
+    default_tier="$(_claude_litellm_proxy_default_request)" || return $?
+    case "$default_tier" in
+      fable|opus|sonnet|haiku) ;;
+      *)
+        echo "claude-litellm use: current default '$default_tier' is not a supported preset." >&2
+        return 1
+        ;;
+    esac
+    ai_litellm model qualify "$target_model" --activate-tier "$default_tier" || return $?
+    echo "Default preset '$default_tier' now selects '$target_model'."
+    echo "Run 'claude-litellm' to launch it."
+    return 0
+  fi
+
+  _claude_litellm_launch_proxy "$selector" "$@"
 }
 
 claude-litellm() {
@@ -565,9 +650,11 @@ claude-litellm() {
 
   case "${1:-}" in
     -h|--help)
-      echo "Usage: claude-litellm [fable|opus|sonnet|haiku|model_name] [claude args...]"
+      echo "Usage: claude-litellm use <tier-or-route> [claude args...]"
+      echo "       claude-litellm [fable|opus|sonnet|haiku|model_name] [claude args...]"
+      echo "       claude-litellm use <registered-route> --default"
       echo "       claude-litellm auth login|status|logout [chatgpt|grok]"
-      echo "       claude-litellm status|doctor|sync|proxy|model|key|runtime|context|reasoning ..."
+      echo "       claude-litellm status|doctor|sync|proxy|model|key|runtime|context|reasoning|permissions ..."
       echo "       claude-litellm --list"
       echo "All providers and local runtimes are routed through the LiteLLM proxy."
       return 0
@@ -593,6 +680,11 @@ claude-litellm() {
       _claude_litellm_auth "$@"
       return $?
       ;;
+    use)
+      shift
+      _claude_litellm_use "$@"
+      return $?
+      ;;
     status)
       shift
       claude-litellm-status "$@"
@@ -605,7 +697,7 @@ claude-litellm() {
       _claude_litellm_oauth_doctor || doctor_rc=1
       return $doctor_rc
       ;;
-    proxy|harness|runtime|model|context|reasoning|key|sync)
+    proxy|harness|runtime|model|context|reasoning|key|permissions|sync)
       local control="$1"
       shift
       ai_litellm "$control" "$@"
@@ -628,8 +720,7 @@ claude-litellm() {
     # A leading non-flag positional is the model selector. If nothing consumed
     # it (unknown tier/model_name, or a typo), it would otherwise leak to claude
     # AS THE PROMPT — silently, and with the default model. Fail loud instead.
-    # (Tiers/raw model_names are the only valid selectors; see DESIGN_RATIONALE
-    # §3 "model selection contract".)
+    # Tiers and registered model names are the only valid selectors.
     if (( ! consumed )); then
       echo "claude-litellm: '$1' is not a selectable model — not a tier and not a registered LiteLLM model_name." >&2
       echo "  list routes:  claude-litellm model list" >&2

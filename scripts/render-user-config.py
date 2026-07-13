@@ -29,6 +29,28 @@ USER_MODELS_END = "# END claude-litellm user models"
 DISCOVERED_BEGIN = "# BEGIN claude-litellm discovered local routes"
 DISCOVERED_END = "# END claude-litellm discovered local routes"
 SURFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")
+RESERVED_SURFACES = frozenset(
+    {
+        "auth",
+        "context",
+        "doctor",
+        "fable",
+        "haiku",
+        "harness",
+        "key",
+        "model",
+        "opus",
+        "permissions",
+        "proxy",
+        "reasoning",
+        "runtime",
+        "sonnet",
+        "status",
+        "sync",
+        "uninstall",
+        "use",
+    }
+)
 BACKEND_RE = re.compile(r"^\S{1,512}$")
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROVIDER_SECRET_ENV_RE = re.compile(
@@ -317,6 +339,8 @@ def _validated_user_models(payload: dict[str, Any], base_names: set[str]) -> lis
                 "user model_name must be 1-128 safe URL/name characters "
                 "(letters, numbers, '.', '_', ':', '+', '-')"
             )
+        if surface in RESERVED_SURFACES:
+            raise ValueError(f"{surface}: model_name is reserved by the claude-litellm CLI")
         if surface in base_names:
             raise ValueError(f"{surface}: package model names cannot be overridden")
         if surface in seen:
@@ -419,7 +443,12 @@ def _validate_discovered_block(block: str) -> None:
         surface = entry.get("model_name")
         params = entry.get("litellm_params")
         info = entry.get("model_info")
-        if not isinstance(surface, str) or not SURFACE_RE.fullmatch(surface) or surface in seen:
+        if (
+            not isinstance(surface, str)
+            or not SURFACE_RE.fullmatch(surface)
+            or surface in RESERVED_SURFACES
+            or surface in seen
+        ):
             raise ValueError("invalid or duplicate discovered model_name")
         if not isinstance(params, dict) or not isinstance(info, dict):
             raise ValueError(f"{surface}: invalid discovered-route metadata")
@@ -536,7 +565,7 @@ def _render_settings(
     harness = payload.get("harness", {})
     if not isinstance(harness, dict):
         raise ValueError("Claude harness override must be an object")
-    unknown_harness = set(harness) - {"reasoningEffort"}
+    unknown_harness = set(harness) - {"reasoningEffort", "permissionMode"}
     if unknown_harness:
         raise ValueError(f"unsupported Claude harness overrides: {', '.join(sorted(unknown_harness))}")
     if "reasoningEffort" in harness and harness["reasoningEffort"] not in {
@@ -548,6 +577,11 @@ def _render_settings(
         "max",
     }:
         raise ValueError("unsupported Claude harness reasoningEffort")
+    if "permissionMode" in harness and harness["permissionMode"] not in {
+        "default",
+        "bypassPermissions",
+    }:
+        raise ValueError("unsupported Claude harness permissionMode")
 
     unresolved = [
         f"{tier}:{model}"

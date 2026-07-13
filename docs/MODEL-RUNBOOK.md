@@ -8,7 +8,9 @@ register/discover -> inspect limits -> qualify /v1/messages -> activate tier
 
 Activation is last. `model qualify --activate-tier` changes a Claude tier only
 when all six compatibility gates pass. Direct `harness alias set` remains an
-explicit administrative bypass.
+explicit administrative bypass. `claude-litellm use <route> --default` is the
+short, safe form for qualifying a concrete route and replacing whichever
+preset currently backs a no-argument launch.
 
 Choose the integration path from the model's credential and endpoint shape:
 
@@ -22,14 +24,15 @@ Choose the integration path from the model's credential and endpoint shape:
 | Multi-field cloud authentication | Reviewed source configuration and reinstall |
 
 For every path, inspect the resulting route, qualify it, then exit and relaunch
-`claude-litellm <route>` to change the provider used by Claude Code.
+`claude-litellm use <route>` to change the provider used by Claude Code. The
+historical short form `claude-litellm <route>` remains equivalent.
 
 ## Configuration layers
 
 - Package defaults: installed `config/litellm_config.base.yaml` and
   `config/claude-litellm/settings.base.json`
 - User models: `~/.config/claude-litellm/models.json`
-- User aliases/reasoning: `~/.config/claude-litellm/settings.json`
+- User aliases/reasoning/permission mode: `~/.config/claude-litellm/settings.json`
 - Generated effective files: the historical non-`.base` paths in the package
 
 Do not edit generated effective files. Under one mutation lock,
@@ -37,6 +40,27 @@ Do not edit generated effective files. Under one mutation lock,
 defaults and private user overlays, then refreshes oMLX routes.
 Only the validated runtime-owned discovery block is carried forward when oMLX
 is offline; the next successful discovery replaces it.
+
+## Selecting and replacing the default
+
+Launch a concrete registered route without changing configuration:
+
+```zsh
+claude-litellm use <route> [claude args...]
+```
+
+Replace the route used by `claude-litellm` with no model argument:
+
+```zsh
+claude-litellm use <concrete-route> --default
+```
+
+The second command is persistence-only: it does not launch Claude or accept
+Claude arguments. It resolves the current default preset, performs the same
+six live/billable gates as `model qualify`, and updates that preset only on
+PASS. Preset names such as `opus` are rejected here because following one
+preset into another would make the requested durable mapping ambiguous. Use a
+route name from `claude-litellm --list`.
 
 ## OpenRouter
 
@@ -89,6 +113,11 @@ fields. Azure, Bedrock, Vertex, OCI, and other multi-field/provider-specific
 auth require a reviewed source configuration and reinstall. Package-defined
 ChatGPT/xAI OAuth routes cannot be created with `model register`;
 `--api-key-env none` means no authentication, not OAuth.
+
+User and runtime-discovered surface names may not collide with the four Claude
+presets or top-level commands such as `use`, `model`, `permissions`, and
+`status`. Rejecting those reserved names ensures both the explicit and short
+launch forms always resolve the same concrete route.
 
 For an OpenAI-compatible endpoint, add `--api-base https://.../v1`. Plain HTTP
 is accepted only for `localhost`, `127.0.0.1`, or `::1`. A local endpoint that
@@ -194,7 +223,8 @@ run overwrites an older PASS with a failure tombstone; a preflight error before
 verifier execution writes no record. Requalify after the provider, effective
 config, verifier, install manifest, or runtime changes; the stored record is
 historical evidence, not an automatic launch permit. Only `--activate-tier`
-makes alias activation conditional on a current PASS.
+makes alias activation conditional on a current PASS; `use <route> --default`
+delegates to that exact transaction rather than trusting old evidence.
 
 ## Reasoning and effort
 
@@ -255,6 +285,34 @@ drifted user route, move its alias to a known-good model, remove and re-add the
 route from the current catalog, requalify it, then reactivate it.
 `--apply` edits package anchors only from a source checkout and is rejected for
 an installed immutable package.
+
+## Permission mode
+
+Permission mode is independent of model routing. The safe package default is
+`default`, even if native Claude is configured for `bypassPermissions`. Inspect
+or change only the wrapper's generated settings overlay with:
+
+```zsh
+claude-litellm permissions get [--json]
+claude-litellm permissions set default
+claude-litellm permissions set bypassPermissions
+claude-litellm permissions reset
+```
+
+Only `default` and `bypassPermissions` are accepted as durable values. The
+bypass choice is an explicit opt-in that disables all Claude Code permission
+checks for newly launched wrapper sessions. `set default` keeps an explicit
+user override whose source is reported as `user-override`; `reset` removes only
+`harness.permissionMode`, preserves aliases and reasoning preferences, and
+inherits the package default. The private override is mode `0600`, is written
+atomically under the shared configuration lock, and survives sync/reinstall.
+Direct edits to the generated proxy overlay never survive regeneration.
+
+For a single session without persisting the choice:
+
+```zsh
+claude-litellm use <route> --dangerously-skip-permissions
+```
 
 ## Rollback
 

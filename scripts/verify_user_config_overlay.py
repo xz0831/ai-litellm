@@ -130,7 +130,10 @@ def main() -> int:
                     },
                     "displayNames": {"opus": "Overlay Test"},
                 },
-                "harness": {"reasoningEffort": "high"},
+                "harness": {
+                    "reasoningEffort": "high",
+                    "permissionMode": "bypassPermissions",
+                },
             },
         )
         summary = json.loads(invoke(root, "--json").stdout)
@@ -194,6 +197,21 @@ def main() -> int:
         write_private(root / "user" / "settings.json", settings)
         invoke(root, expect_ok=False)
         del settings["settings"]["aliases"]["invented-tier"]
+        write_private(root / "user" / "settings.json", settings)
+        invoke(root)
+
+        # Permission bypass is a narrow, explicit harness opt-in. Both
+        # supported modes validate, while other Claude CLI permission modes,
+        # empty values and non-strings fail closed at the durable boundary.
+        for valid_mode in ("default", "bypassPermissions"):
+            settings["harness"]["permissionMode"] = valid_mode
+            write_private(root / "user" / "settings.json", settings)
+            invoke(root)
+        for invalid_mode in ("plan", "", True, None):
+            settings["harness"]["permissionMode"] = invalid_mode
+            write_private(root / "user" / "settings.json", settings)
+            invoke(root, expect_ok=False)
+        settings["harness"]["permissionMode"] = "bypassPermissions"
         write_private(root / "user" / "settings.json", settings)
         invoke(root)
 
@@ -345,6 +363,12 @@ def main() -> int:
             model_payload(name="Kimi-K2.7-Code-openrouter"),
         )
         invoke(root, expect_ok=False)
+        for reserved_surface in ("use", "permissions", "opus"):
+            write_private(
+                root / "user" / "models.json",
+                model_payload(name=reserved_surface),
+            )
+            invoke(root, expect_ok=False)
         write_private(root / "user" / "models.json", model_payload())
         os.chmod(root / "user" / "models.json", 0o644)
         invoke(root, expect_ok=False)

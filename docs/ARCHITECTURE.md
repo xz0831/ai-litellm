@@ -29,9 +29,13 @@ budget on Claude Code.
   and mode `0600` files. They are never copied into Claude's child environment.
 - Claude transcripts and history are isolated from native Claude sessions, while
   user settings, plugins, skills and instructions are shared deliberately.
-- The generated Claude proxy settings overlay forces
-  `permissions.defaultMode="default"`, including upgrades from stale unsafe
-  overlays.
+- The generated Claude proxy settings overlay defaults to
+  `permissions.defaultMode="default"`. A validated private user override may
+  opt in to `bypassPermissions`; stale or manually edited generated overlays
+  are still rewritten from the effective policy on every launch. The launcher
+  freezes that policy into a private per-process snapshot under the shared
+  mutation lock, passes the snapshot to Claude, and removes it when Claude
+  exits, so a concurrent preference update cannot alter a starting session.
 - Provider limits are data. A configured input limit above the currently selected
   provider limit is a failing doctor condition, not an informational warning.
 - Pre-call context checks conservatively count messages, system/instruction
@@ -144,11 +148,12 @@ hashed package config directory. The caller's current directory, user site and
 ambient `PYTHONPATH` cannot shadow LiteLLM, OAuth hooks, or their dependencies.
 
 The installed model registry and Claude settings are generated outputs.
-Immutable package inputs use `*.base` paths; durable user models, aliases and
-reasoning preferences live under `~/.config/claude-litellm` with private
-permissions. Rendering validates names, limits, endpoint schemes and secret
-references, then atomically replaces each output while holding the shared
-configuration lock. The only effective-file state
+Immutable package inputs use `*.base` paths; durable user models, aliases,
+reasoning preferences and the narrow Claude permission-mode opt-in live under
+`~/.config/claude-litellm` with private permissions. Rendering validates names,
+limits, endpoint schemes, secret references and allowlisted permission values,
+then atomically replaces each output while holding the shared configuration
+lock. The only effective-file state
 carried forward is a structurally validated, loopback-only, runtime-owned
 discovery block; sync replaces it after successful discovery and retains it on
 runtime failure. Sync and user mutations share a configuration lock. Reinstall
@@ -178,8 +183,9 @@ commit, runtime content fingerprint, and the individual gate results.
 failure tombstone instead of leaving stale success evidence; a preflight error
 that prevents verifier execution does not publish a record. Only
 `model qualify --activate-tier` makes alias activation conditional on this
-result; direct route launch and the administrative `harness alias set` command
-remain explicit bypasses.
+result. `use <route> --default` delegates to the same live transaction; direct
+route launch and the administrative `harness alias set` command remain explicit
+bypasses.
 
 One Claude process maps every tier and subagent to the initial validated route.
 This is deliberate: effort, compaction, context, and output controls are

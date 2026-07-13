@@ -59,9 +59,10 @@ The package contains an isolated, validated Python 3.13 runtime with
 litellm[proxy]==1.92.0 and prisma==0.15.0. Runtime updates are assembled in a
 staging directory and published only after import/version checks pass.
 
-Package defaults are immutable. User-added models, Claude aliases and reasoning
-preferences live under ~/.config/claude-litellm and are preserved and validated
-when a new package version renders its effective configuration.
+Package defaults are immutable. User-added models, Claude aliases, reasoning
+preferences and the permission-mode opt-in live under ~/.config/claude-litellm
+and are preserved and validated when a new package version renders its
+effective configuration.
 
 On a normal install, durable Claude state is migrated from ai-litellm-fabric or
 ai-litellm and those legacy package roots/shims are removed after verification.

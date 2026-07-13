@@ -578,6 +578,48 @@ now="$("$HOME/.local/bin/claude-litellm" harness alias get claude --json | node 
 [[ "$now" == "GLM-5.2-openrouter" && "$orig" != "$now" ]] \
   || { echo "FAIL: harness alias set round-trip"; exit 1; }
 echo "ok: harness alias get/set (claude tiers)"
+# ── durable Claude permission mode round-trip ────────────────────────────────
+p_json="$("$HOME/.local/bin/claude-litellm" permissions get --json 2>/dev/null)"
+print -r -- "$p_json" | jq -e ".mode == \"default\" and .source == \"package-default\"" >/dev/null \
+  || { echo "FAIL: initial permission mode is not the safe package default"; exit 1; }
+"$HOME/.local/bin/claude-litellm" permissions set default >/dev/null 2>&1
+p_json="$("$HOME/.local/bin/claude-litellm" permissions get --json 2>/dev/null)"
+print -r -- "$p_json" | jq -e ".mode == \"default\" and .source == \"user-override\"" >/dev/null \
+  || { echo "FAIL: explicit safe permission override did not retain its source"; exit 1; }
+"$HOME/.local/bin/claude-litellm" permissions set bypassPermissions >/dev/null 2>&1
+p_json="$("$HOME/.local/bin/claude-litellm" permissions get --json 2>/dev/null)"
+print -r -- "$p_json" | jq -e ".mode == \"bypassPermissions\" and .source == \"user-override\"" >/dev/null \
+  || { echo "FAIL: persistent bypass permission mode did not activate"; exit 1; }
+test "$(jq -r ".harness.permissionMode" "$HOME/.config/claude-litellm/settings.json")" = "bypassPermissions"
+test "$(jq -r ".permissions.defaultMode" "$HOME/.local/share/claude-litellm/state/claude-litellm/overlay-settings-proxy.json")" = "bypassPermissions"
+permission_settings_backup="$HOME/permission-settings.backup"
+cp -p "$HOME/.config/claude-litellm/settings.json" "$permission_settings_backup"
+jq ".harness.permissionMode = true" "$permission_settings_backup" > "$HOME/.config/claude-litellm/settings.json.tmp"
+chmod 600 "$HOME/.config/claude-litellm/settings.json.tmp"
+mv "$HOME/.config/claude-litellm/settings.json.tmp" "$HOME/.config/claude-litellm/settings.json"
+if "$HOME/.local/bin/claude-litellm" permissions get --json >/dev/null 2>&1; then
+  echo "FAIL: malformed present permission mode was treated as absent"; exit 1
+fi
+cp -p "$permission_settings_backup" "$HOME/.config/claude-litellm/settings.json"
+rm -f "$permission_settings_backup"
+if "$HOME/.local/bin/claude-litellm" permissions set plan >/dev/null 2>&1; then
+  echo "FAIL: unsupported persistent permission mode was accepted"; exit 1
+fi
+if "$HOME/.local/bin/claude-litellm" permissions set bypassPermissions typo >/dev/null 2>&1; then
+  echo "FAIL: permission mutation accepted trailing arguments"; exit 1
+fi
+if "$HOME/.local/bin/claude-litellm" permissions get --json typo >/dev/null 2>&1; then
+  echo "FAIL: permission read accepted trailing arguments"; exit 1
+fi
+test "$(jq -r ".harness.permissionMode" "$HOME/.config/claude-litellm/settings.json")" = "bypassPermissions"
+"$HOME/.local/bin/claude-litellm" permissions reset >/dev/null 2>&1
+p_json="$("$HOME/.local/bin/claude-litellm" permissions get --json 2>/dev/null)"
+print -r -- "$p_json" | jq -e ".mode == \"default\" and .source == \"package-default\"" >/dev/null \
+  || { echo "FAIL: permission reset did not restore the package default"; exit 1; }
+test "$(jq -r ".harness.permissionMode // empty" "$HOME/.config/claude-litellm/settings.json")" = ""
+test "$(jq -r ".permissions.defaultMode" "$HOME/.local/share/claude-litellm/state/claude-litellm/overlay-settings-proxy.json")" = "default"
+test "$("$HOME/.local/bin/claude-litellm" harness alias get claude --json | jq -r ".[] | select(.tier == \"fable\") | .model")" = "$orig"
+echo "ok: persistent Claude permission mode set/get/reset"
 # R2 review: the dashboard pipes a newline-less secret to key set via stdin; zsh
 # read returns nonzero on EOF-without-newline, which used to abort key set and
 # store nothing. Verify the read tolerates it. Use --env-file with an isolated
@@ -802,6 +844,13 @@ if "$HOME/.local/bin/claude-litellm" model register Reserved-Key-openai \
   --api-key-env LITELLM_MASTER_KEY --dry-run >/dev/null 2>&1; then
   echo "FAIL: model register accepted the gateway master key as a provider credential" >&2; exit 1
 fi
+for reserved_surface in use permissions opus; do
+  if "$HOME/.local/bin/claude-litellm" model register "$reserved_surface" \
+    --backend openai/reserved-surface --context 32768 --output 4096 \
+    --api-key-env none --dry-run >/dev/null 2>&1; then
+    echo "FAIL: model register accepted reserved CLI surface $reserved_surface" >&2; exit 1
+  fi
+done
 for blocked_effort in xhigh max; do
   if "$HOME/.local/bin/claude-litellm" model register Blocked-Effort-openai \
     --backend openai/blocked-effort --context 32768 --output 4096 \
@@ -949,6 +998,15 @@ empty_settings_proxy="$HOME/empty-generated-settings.json"
 (
   export AI_LITELLM_HARNESSES_DIR="$empty_settings_harnesses"
   ai_litellm_render_claude_settings claude "$empty_settings_proxy" "$empty_settings_proxy"
+  if ai_litellm_permissions_get --json >/dev/null 2>&1; then
+    echo "FAIL: permission read succeeded without a generated permission slot"; exit 1
+  fi
+  if ai_litellm_permissions_update set default >/dev/null 2>&1; then
+    echo "FAIL: permission set succeeded without a generated permission slot"; exit 1
+  fi
+  if ai_litellm_permissions_update reset >/dev/null 2>&1; then
+    echo "FAIL: permission reset succeeded without a generated permission slot"; exit 1
+  fi
 )
 test "$(jq -c . "$empty_settings_proxy")" = "{}"
 # Upgrade regression: rendering must repair a stale proxy overlay left by an
@@ -1005,6 +1063,8 @@ test "$(_claude_litellm_resolve_model_arg openrouter/z-ai/glm-5.2)" = "GLM-5.2-o
   _claude_litellm_launch_proxy() { print -r -- "proxy:$1"; }
   test "$(claude-litellm sonnet)" = "proxy:sonnet"
   test "$(claude-litellm openrouter/z-ai/glm-5.2)" = "proxy:openrouter/z-ai/glm-5.2"
+  test "$(claude-litellm use sonnet)" = "proxy:sonnet"
+  test "$(claude-litellm use openrouter/z-ai/glm-5.2)" = "proxy:openrouter/z-ai/glm-5.2"
   # An unresolvable leading model selector must fail before the launcher so it
   # can never leak into Claude Code as a prompt.
   ! claude-litellm Qwen3.6-35B-omlx >/dev/null 2>&1
@@ -1014,6 +1074,23 @@ test "$(_claude_litellm_resolve_model_arg openrouter/z-ai/glm-5.2)" = "GLM-5.2-o
   test "$(claude-litellm Qwen3.6-27B-omlx)" = "proxy:Qwen3.6-27B-omlx"
 )
 echo "ok: proxy-only model selector guards"
+(
+  _claude_litellm_launch_proxy() { print -r -- "proxy:${(j:|:)@}"; }
+  test "$(claude-litellm use sonnet -p hello_world)" = "proxy:sonnet|-p|hello_world"
+  ! claude-litellm use >/dev/null 2>&1
+  ! claude-litellm use not-a-real-model >/dev/null 2>&1
+)
+(
+  _claude_litellm_launch_proxy() { echo "unexpected launch" >&2; return 99; }
+  _claude_litellm_proxy_default_request() { print -r -- "sonnet"; }
+  ai_litellm() { print -r -- "control:${(j:|:)@}"; }
+  use_default_output="$(claude-litellm use GLM-5.2-openrouter --default)"
+  [[ "$use_default_output" == *"control:model|qualify|GLM-5.2-openrouter|--activate-tier|sonnet"* ]]
+  [[ "$use_default_output" == *"to launch it."* ]]
+  ! claude-litellm use sonnet --default >/dev/null 2>&1
+  ! claude-litellm use GLM-5.2-openrouter --default -p nope >/dev/null 2>&1
+)
+echo "ok: explicit use command launches or safely qualifies the dynamic default preset"
 # The selector checks above deliberately replace the complete launch function,
 # which also owns effort validation. Exercise the real validator directly here
 # instead of accidentally asserting against that test double.
@@ -1089,8 +1166,26 @@ proxy_expect "haiku_name=Mimo-V2.5-openrouter"
 proxy_expect "subagent="
 proxy_expect "caps=0:"
 proxy_expect "--model sonnet"
-proxy_expect "--settings $CLAUDE_LITELLM_SETTINGS_ARG_PROXY"
+proxy_expect "--settings ${CLAUDE_LITELLM_SETTINGS_ARG_PROXY:h}/.overlay-settings-launch."
+if find "${CLAUDE_LITELLM_SETTINGS_ARG_PROXY:h}" -maxdepth 1 -name ".overlay-settings-launch.*" | grep -q .; then
+  echo "FAIL: per-launch Claude settings snapshot was not removed" >&2
+  exit 1
+fi
 echo "ok: proxy launcher injects isolated routing environment"
+# A launch freezes its permission policy into a private snapshot. A concurrent
+# durable update may replace the shared generated overlay, but it must not
+# retroactively change the already-prepared session.
+ai_litellm_permissions_update reset >/dev/null
+_claude_litellm_launch_prepare
+permission_snapshot="$CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG"
+test "$(jq -r ".permissions.defaultMode" "$permission_snapshot")" = "default"
+ai_litellm_permissions_update set bypassPermissions >/dev/null 2>&1
+test "$(jq -r ".permissions.defaultMode" "$CLAUDE_LITELLM_SETTINGS_ARG_PROXY")" = "bypassPermissions"
+test "$(jq -r ".permissions.defaultMode" "$permission_snapshot")" = "default"
+rm -f "$permission_snapshot"
+typeset -g CLAUDE_LITELLM_LAUNCH_SETTINGS_ARG=""
+ai_litellm_permissions_update reset >/dev/null
+echo "ok: launch permission snapshot is stable across concurrent policy changes"
 for forbidden in --model=Kimi-K2.7-Code-openrouter --settings=/tmp/attacker.json --fallback-model=Kimi-K2.7-Code-openrouter; do
   if (
     ai_litellm_model_runtime_ready() { return 0; }
@@ -1151,8 +1246,8 @@ echo "ok: isolated Claude settings migrate once before shared linking"
     print -r -- "$stale_output" >&2
     exit 1
   }
-  [[ "$stale_output" == *"--settings $CLAUDE_LITELLM_SETTINGS_ARG_PROXY"* ]] || {
-    echo "FAIL: stale proxy overlay override did not use the canonical settings path" >&2
+  [[ "$stale_output" == *"--settings ${CLAUDE_LITELLM_SETTINGS_ARG_PROXY:h}/.overlay-settings-launch."* ]] || {
+    echo "FAIL: stale proxy overlay override did not use a canonical-root launch snapshot" >&2
     print -r -- "$stale_output" >&2
     exit 1
   }
@@ -1813,6 +1908,8 @@ for durability_tier in fable opus sonnet haiku; do
 done
 HOME="$spaced_home" "$spaced_prefix/bin/claude-litellm" \
   harness reasoning set claude high >/dev/null
+HOME="$spaced_home" "$spaced_prefix/bin/claude-litellm" \
+  permissions set bypassPermissions >/dev/null 2>&1
 
 test "$(stat -f %Lp "$spaced_home/.config/claude-litellm")" = "700"
 test "$(stat -f %Lp "$user_models")" = "600"
@@ -1823,7 +1920,7 @@ if grep -q 'Durability-Test-openrouter' "$spaced_prefix/config/litellm_config.ba
   echo "User model leaked into package base config" >&2
   exit 1
 fi
-jq -e '.settings.aliases.opus == "Durability-Test-openrouter" and .harness.reasoningEffort == "high"' \
+jq -e '.settings.aliases.opus == "Durability-Test-openrouter" and .harness.reasoningEffort == "high" and .harness.permissionMode == "bypassPermissions"' \
   "$user_settings" >/dev/null
 models_sha="$(sha256_file "$user_models")"
 settings_sha="$(sha256_file "$user_settings")"
@@ -1844,7 +1941,8 @@ fi
 grep -q 'model_name: Durability-Test-openrouter' "$mutable_config"
 grep -q 'reasoning_effort: high' "$mutable_config"
 jq -e '.aliases.opus == "Durability-Test-openrouter"' "$mutable_settings" >/dev/null
-echo "ok: user models, aliases, and reasoning survive reinstall through private overlays"
+test "$(jq -r '.permissions.defaultMode' "$spaced_prefix/state/claude-litellm/overlay-settings-proxy.json")" = "bypassPermissions"
+echo "ok: user models, aliases, reasoning, and permission mode survive reinstall through private overlays"
 
 if [[ -d "$spaced_home/.local" ]] && find "$spaced_home/.local" -name "*.bak.*" | grep -q .; then
   echo "Unexpected backup files after identical reinstall" >&2

@@ -1100,22 +1100,51 @@ ai_litellm_harness_json() {
   local json_path="$2"
   local descriptor
   descriptor="$(ai_litellm_harness_descriptor "$harness")" || return 1
-  if [[ "$harness" == "claude" && "$json_path" == "adapterConfig.reasoning.effort" && \
-        -e "$AI_LITELLM_USER_CLAUDE_SETTINGS" ]]; then
+  if [[ "$harness" == "claude" && \
+        ( "$json_path" == "adapterConfig.reasoning.effort" || \
+          "$json_path" == "adapterConfig.generatedSettings.permissions.defaultMode" ) && \
+        ( -e "$AI_LITELLM_USER_CLAUDE_SETTINGS" || -L "$AI_LITELLM_USER_CLAUDE_SETTINGS" ) ]]; then
     local override rc
     override="$(node -e '
 const fs = require("fs");
 const file = process.argv[1];
-const stat = fs.lstatSync(file);
-if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600) {
+const jsonPath = process.argv[2];
+let fd;
+let raw;
+try {
+  fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const stat = fs.fstatSync(fd);
+  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("unsafe mode or type");
+  raw = fs.readFileSync(fd, "utf8");
+} catch (_) {
   console.error(`Unsafe Claude user override: ${file}`);
   process.exit(1);
+} finally {
+  if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {}
 }
-const payload = JSON.parse(fs.readFileSync(file, "utf8"));
-const value = payload?.harness?.reasoningEffort;
-if (typeof value !== "string" || !value) process.exit(2);
+const payload = JSON.parse(raw);
+if ((payload.schemaVersion ?? 1) !== 1) {
+  console.error("unsupported Claude user override schemaVersion");
+  process.exit(1);
+}
+const field = jsonPath === "adapterConfig.reasoning.effort"
+  ? "reasoningEffort"
+  : "permissionMode";
+const allowed = field === "reasoningEffort"
+  ? ["auto", "low", "medium", "high", "xhigh", "max"]
+  : ["default", "bypassPermissions"];
+const value = payload?.harness?.[field];
+if (value === undefined) process.exit(2);
+if (typeof value !== "string" || !value) {
+  console.error(`Unsupported Claude harness ${field}: expected a non-empty string`);
+  process.exit(1);
+}
+if (!allowed.includes(value)) {
+  console.error(`Unsupported Claude harness ${field}: ${value}`);
+  process.exit(1);
+}
 process.stdout.write(value);
-' "$AI_LITELLM_USER_CLAUDE_SETTINGS")"
+' "$AI_LITELLM_USER_CLAUDE_SETTINGS" "$json_path")"
     rc=$?
     if (( rc == 0 )); then
       printf '%s\n' "$override"
@@ -1237,6 +1266,204 @@ ai_litellm_harness_alias_set() {
   (( rc == 0 )) || return $rc
   echo "Set $harness $tier -> $model"
   echo "Run 'claude-litellm sync' to apply it to the running proxy."
+}
+
+# The proxy --settings file is generated state, so a durable permission choice
+# lives beside the other private Claude harness overrides rather than in the
+# generated overlay or the user's native ~/.claude/settings.json. The package
+# default remains "default"; bypassPermissions is accepted only as an explicit
+# opt-in and is applied to newly launched claude-litellm sessions.
+ai_litellm_permissions_slot_supported() {
+  local defaults proxy_extra merged
+  defaults="$(ai_litellm_harness_json claude adapterConfig.generatedSettings 2>/dev/null || true)"
+  proxy_extra="$(ai_litellm_harness_json claude adapterConfig.generatedSettingsProxy 2>/dev/null || true)"
+  if [[ -n "$defaults" && -n "$proxy_extra" ]]; then
+    merged="$(jq -cn --argjson base "$defaults" --argjson extra "$proxy_extra" '$base * $extra')" || return 1
+  else
+    merged="${proxy_extra:-$defaults}"
+  fi
+  [[ -n "$merged" ]] || merged='{}'
+  print -r -- "$merged" | jq -e '.permissions.defaultMode? != null' >/dev/null 2>&1
+}
+
+ai_litellm_permissions_require_supported() {
+  ai_litellm_permissions_slot_supported || {
+    echo "The Claude harness does not expose a generated permission-mode slot." >&2
+    return 1
+  }
+}
+
+ai_litellm_permissions_get() {
+  local as_json=0
+  (( $# <= 1 )) || {
+    echo "Usage: claude-litellm permissions get [--json]" >&2
+    return 1
+  }
+  case "${1:-}" in
+    "") ;;
+    --json) as_json=1 ;;
+    *) echo "Usage: claude-litellm permissions get [--json]" >&2; return 1 ;;
+  esac
+  ai_litellm_permissions_require_supported || return 1
+
+  # Serialize the two-part read with mutations so mode and provenance always
+  # describe the same override snapshot.
+  local preowned=0 rc=0 mode="" source="package-default"
+  [[ "${AI_LITELLM_USER_MUTATION_FD:-}" == <-> ]] && preowned=1
+  ai_litellm_user_mutation_lock_acquire || return 1
+  mode="$(ai_litellm_harness_json claude adapterConfig.generatedSettings.permissions.defaultMode)" || rc=$?
+  if (( rc == 0 )) && \
+     [[ -f "$AI_LITELLM_USER_CLAUDE_SETTINGS" && ! -L "$AI_LITELLM_USER_CLAUDE_SETTINGS" ]] && \
+     jq -e '.harness.permissionMode? != null' "$AI_LITELLM_USER_CLAUDE_SETTINGS" >/dev/null 2>&1; then
+    source="user-override"
+  fi
+  (( preowned )) || ai_litellm_user_mutation_lock_release
+  (( rc == 0 )) || return $rc
+  if (( as_json )); then
+    jq -cn --arg mode "$mode" --arg source "$source" '{mode: $mode, source: $source}'
+  else
+    echo "Claude permission mode: $mode ($source)"
+  fi
+}
+
+ai_litellm_permissions_update() {
+  local operation="${1:-}" mode="${2:-}"
+  case "$operation" in
+    set)
+      (( $# == 2 )) || { echo "Usage: claude-litellm permissions set <default|bypassPermissions>" >&2; return 1; }
+      case "$mode" in
+        default|bypassPermissions) ;;
+        *) echo "Usage: claude-litellm permissions set <default|bypassPermissions>" >&2; return 1 ;;
+      esac
+      ;;
+    reset) (( $# == 1 )) || { echo "Usage: claude-litellm permissions reset" >&2; return 1; } ;;
+    *) echo "Usage: claude-litellm permissions set <default|bypassPermissions> | reset" >&2; return 1 ;;
+  esac
+  ai_litellm_permissions_require_supported || return 1
+
+  ai_litellm_user_config_paths_trusted || return 1
+  local descriptor
+  descriptor="$(ai_litellm_harness_descriptor claude)" || {
+    echo "Claude harness descriptor is unavailable." >&2
+    return 1
+  }
+  ai_litellm_assert_rendered_path "$AI_LITELLM_USER_CLAUDE_SETTINGS" "Claude user settings override" || return $?
+
+  local owns_lock=0
+  if [[ "${AI_LITELLM_USER_MUTATION_FD:-}" != <-> ]]; then
+    ai_litellm_user_mutation_lock_acquire || return 1
+    owns_lock=1
+  fi
+  local backup existed=0 rc=0
+  backup="$(mktemp "${TMPDIR:-/tmp}/claude-litellm-permissions.json.XXXXXX")" || {
+    (( owns_lock )) && ai_litellm_user_mutation_lock_release
+    return 1
+  }
+  if [[ -f "$AI_LITELLM_USER_CLAUDE_SETTINGS" && ! -L "$AI_LITELLM_USER_CLAUDE_SETTINGS" ]]; then
+    cp -p "$AI_LITELLM_USER_CLAUDE_SETTINGS" "$backup" || {
+      echo "Failed to create a rollback copy of the Claude settings override." >&2
+      rm -f "$backup"
+      (( owns_lock )) && ai_litellm_user_mutation_lock_release
+      return 1
+    }
+    existed=1
+  elif [[ -e "$AI_LITELLM_USER_CLAUDE_SETTINGS" || -L "$AI_LITELLM_USER_CLAUDE_SETTINGS" ]]; then
+    echo "Refusing unsafe Claude settings override path: $AI_LITELLM_USER_CLAUDE_SETTINGS" >&2
+    rm -f "$backup"
+    (( owns_lock )) && ai_litellm_user_mutation_lock_release
+    return 1
+  fi
+
+  node -e '
+const fs = require("fs");
+const [overrideFile, operation, mode = ""] = process.argv.slice(1);
+const fail = (message) => { console.error(message); process.exit(1); };
+let payload = {schemaVersion: 1, settings: {}};
+if (fs.existsSync(overrideFile)) {
+  let fd;
+  try {
+    fd = fs.openSync(overrideFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("unsafe mode or type");
+    payload = JSON.parse(fs.readFileSync(fd, "utf8"));
+  } catch (_) {
+    fail(`Unsafe Claude user override: ${overrideFile}`);
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch (_) {}
+  }
+}
+if ((payload.schemaVersion ?? 1) !== 1) fail("unsupported Claude user override schemaVersion");
+payload.schemaVersion = 1;
+payload.settings ||= {};
+payload.harness ||= {};
+if (operation === "set") {
+  if (!["default", "bypassPermissions"].includes(mode)) fail(`Unsupported Claude permission mode: ${mode}`);
+  payload.harness.permissionMode = mode;
+} else if (operation === "reset") {
+  delete payload.harness.permissionMode;
+  if (Object.keys(payload.harness).length === 0) delete payload.harness;
+} else {
+  fail(`Unsupported permission update operation: ${operation}`);
+}
+const tmp = `${overrideFile}.tmp.${process.pid}`;
+try {
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(payload, null, 2) + "\n");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, overrideFile);
+} catch (error) {
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  throw error;
+}
+' "$AI_LITELLM_USER_CLAUDE_SETTINGS" "$operation" "$mode" || rc=$?
+
+  if (( rc == 0 )); then
+    ai_litellm_render_user_config >/dev/null || rc=$?
+  fi
+  if (( rc == 0 )); then
+    ai_litellm_render_claude_settings claude >/dev/null || rc=$?
+  fi
+  if (( rc != 0 )); then
+    local restore_rc=0
+    if (( existed )); then
+      cp -p "$backup" "$AI_LITELLM_USER_CLAUDE_SETTINGS" || restore_rc=1
+    else
+      rm -f "$AI_LITELLM_USER_CLAUDE_SETTINGS" || restore_rc=1
+    fi
+    if (( restore_rc != 0 )); then
+      echo "Failed to restore the Claude settings override after a permission update error." >&2
+      rc=1
+    fi
+    ai_litellm_render_user_config >/dev/null 2>&1 || true
+    ai_litellm_render_claude_settings claude >/dev/null 2>&1 || true
+  fi
+  rm -f "$backup"
+  (( owns_lock )) && ai_litellm_user_mutation_lock_release
+  (( rc == 0 )) || return $rc
+
+  if [[ "$operation" == "reset" ]]; then
+    echo "Reset Claude permission mode to the package default (default)."
+  else
+    echo "Updated Claude permission mode: $mode"
+    if [[ "$mode" == "bypassPermissions" ]]; then
+      echo "WARNING: new claude-litellm sessions will bypass all Claude Code permission checks." >&2
+    fi
+  fi
+  echo "The change applies to new sessions and survives sync and reinstall."
+}
+
+ai_litellm_cmd_permissions() {
+  local verb="${1:-get}"; [[ $# -gt 0 ]] && shift
+  case "$verb" in
+    get|status) ai_litellm_permissions_get "$@" ;;
+    set)        ai_litellm_permissions_update set "$@" ;;
+    reset)      ai_litellm_permissions_update reset "$@" ;;
+    *) echo "Usage: claude-litellm permissions get [--json] | set <default|bypassPermissions> | reset" >&2; return 1 ;;
+  esac
 }
 
 ai_litellm_harness_names() {
@@ -1596,8 +1823,9 @@ ai_litellm_render_settings_defaults() {
   local tmp
   tmp="${settings_path}.$$"
   # Recursive fill preserves user-owned settings. permissions.defaultMode is
-  # safety-owned by the wrapper, so upgrades must overwrite stale values such
-  # as bypassPermissions instead of retaining them forever.
+  # policy-owned by the wrapper, so upgrades must overwrite stale manual edits
+  # with the validated effective mode (the safe package default or an explicit
+  # durable user override).
   jq --argjson defaults "$defaults" '
     def fill($d):
       if (type == "object") and ($d | type == "object") then
@@ -1643,7 +1871,7 @@ ai_litellm_render_claude_settings() {
   local harness="${1:-claude}"
   local settings_path="${2:-}"
   local proxy_settings_path="${3:-}"
-  local defaults proxy_extra proxy_defaults
+  local defaults proxy_extra proxy_defaults permission_mode
 
   [[ -n "$settings_path" ]] || settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArgProxy)" || return 1
   [[ -n "$proxy_settings_path" ]] || proxy_settings_path="$(ai_litellm_harness_json "$harness" paths.settingsArgProxy 2>/dev/null || true)"
@@ -1656,13 +1884,22 @@ ai_litellm_render_claude_settings() {
   else
     proxy_defaults="${proxy_extra:-$defaults}"
   fi
+  [[ -n "$proxy_defaults" ]] || proxy_defaults='{}'
+  # Only harness descriptors that declare the generated permission slot own it.
+  # This keeps a descriptor with no generated-settings surface exactly empty
+  # instead of inventing Claude-specific policy fields for it.
+  if [[ "$harness" == "claude" ]] && \
+     print -r -- "$proxy_defaults" | jq -e '.permissions.defaultMode? != null' >/dev/null 2>&1; then
+    permission_mode="$(ai_litellm_harness_json "$harness" adapterConfig.generatedSettings.permissions.defaultMode)" || return $?
+    proxy_defaults="$(jq -cn --argjson payload "$proxy_defaults" --arg mode "$permission_mode" \
+      '$payload | .permissions.defaultMode = $mode')" || return 1
+  fi
   # This is a package-generated --settings overlay, not the user's native
   # settings file. Rewrite the exact allowlisted payload every time so an old
   # or edited overlay cannot retain env/model/apiKeyHelper routing overrides.
   # `${value:-{}}` is not a safe way to express a literal JSON object in zsh:
   # the first `}` terminates the parameter expansion and the second becomes a
   # literal suffix, turning every non-empty payload into malformed `...}}`.
-  [[ -n "$proxy_defaults" ]] || proxy_defaults='{}'
   ai_litellm_write_generated_settings_exact "$proxy_settings_path" "$proxy_defaults"
 }
 
@@ -5198,6 +5435,13 @@ supports_reasoning = bool({"reasoning", "reasoning_effort", "include_reasoning"}
 surface = custom_name or "-".join(part.capitalize() for part in provider_id.rsplit("/", 1)[-1].split("-")) + "-openrouter"
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}", surface):
     raise SystemExit("surface contains unsafe characters")
+reserved_surfaces = {
+    "auth", "context", "doctor", "fable", "haiku", "harness", "key",
+    "model", "opus", "permissions", "proxy", "reasoning", "runtime",
+    "sonnet", "status", "sync", "uninstall", "use",
+}
+if surface in reserved_surfaces:
+    raise SystemExit(f"surface is reserved by the claude-litellm CLI: {surface}")
 config = yaml.safe_load(open(config_path, encoding="utf-8")) or {}
 existing = {e.get("model_name") for e in config.get("model_list", []) if isinstance(e, dict)}
 if surface in existing:
@@ -5378,6 +5622,13 @@ import yaml
 dry = dry_raw == "1"
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}", surface):
     raise SystemExit("surface contains unsafe characters")
+reserved_surfaces = {
+    "auth", "context", "doctor", "fable", "haiku", "harness", "key",
+    "model", "opus", "permissions", "proxy", "reasoning", "runtime",
+    "sonnet", "status", "sync", "uninstall", "use",
+}
+if surface in reserved_surfaces:
+    raise SystemExit(f"surface is reserved by the claude-litellm CLI: {surface}")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*/[^\s/][^\s]*", backend):
     raise SystemExit("backend must be an explicit provider/model LiteLLM identifier")
 if not api_key_env:
@@ -8236,6 +8487,9 @@ Usage: claude-litellm <group> <verb> [args]
   Reasoning:     claude-litellm reasoning matrix [model]|probe <model> [effort]
   Doctor:        claude-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]
   Key:           claude-litellm key status|set [--keychain|--env-file] <openrouter|ENV_VAR|provider-name> [value]
+  Permissions:   claude-litellm permissions get [--json]
+                 claude-litellm permissions set <default|bypassPermissions>
+                 claude-litellm permissions reset
   Sync:          claude-litellm sync      Regenerate derived configs + reload proxy from the single source
   Uninstall:     claude-litellm uninstall Remove package directory and global shim
 
@@ -8260,6 +8514,7 @@ ai_litellm() {
     reasoning)    ai_litellm_cmd_reasoning "$@" ;;
     doctor)       ai_litellm_cmd_doctor "$@" ;;
     key)          ai_litellm_cmd_key "$@" ;;
+    permissions)  ai_litellm_cmd_permissions "$@" ;;
     sync|--sync)  ai_litellm_sync "$@" ;;
     uninstall)    ai_litellm_uninstall "$@" ;;
 

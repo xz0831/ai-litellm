@@ -119,7 +119,7 @@ claude-litellm model qualify <other-route>
 ```
 
 Authentication status proves token presence only. A PASS from `model qualify`
-is current transport evidence; a real `claude-litellm <route> -p '...'` smoke
+is current transport evidence; a real `claude-litellm use <route> -p '...'` smoke
 then exercises the full Claude Code client path. Add
 `--activate-tier <fable|opus|sonnet|haiku>` only when that route should replace
 the chosen durable tier after PASS.

@@ -64,27 +64,60 @@ The packaged default is OpenRouter-backed. If its credential is absent, launch
 stops before the proxy starts and prints the exact key command; it never falls
 through to an ambient provider credential.
 
-Select a Claude tier or a real LiteLLM route:
+Select a Claude preset or a real LiteLLM route. The explicit `use` form and the
+short direct form are equivalent for one-session launch:
 
 ```zsh
-claude-litellm fable
-claude-litellm GPT-5.4-chatgpt-oauth
-claude-litellm Grok-4.5-xai-oauth
-claude-litellm Qwen3.6-27B-omlx
+claude-litellm use fable
+claude-litellm use GPT-5.4-chatgpt-oauth
+claude-litellm Grok-4.5-xai-oauth        # short form remains supported
+claude-litellm use Qwen3.6-27B-omlx
 ```
 
 Claude arguments pass through normally:
 
 ```zsh
-claude-litellm opus -p 'Review this repository'
+claude-litellm use opus -p 'Review this repository'
 ```
 
 One Claude process is pinned to the route selected at launch. Every Claude tier
 and subagent points to that validated route because effort, context, and output
 settings are process-global. To change providers, exit and relaunch
-`claude-litellm <route>`; in-session `/model` is not a cross-provider switch.
+`claude-litellm use <route>`; in-session `/model` is not a cross-provider switch.
 Use `claude-litellm --list` to see the current effective route names, including
 oMLX models discovered on this machine.
+
+To replace the route used by a no-argument launch, name a concrete registered
+route rather than a preset:
+
+```zsh
+claude-litellm use Kimi-K2.7-Code-openrouter --default
+```
+
+`--default` does not open Claude. It reruns the six live compatibility gates
+(cloud routes can incur provider charges), then atomically changes the current
+default preset only on PASS. Run `claude-litellm` afterward. The four preset
+names remain launch conveniences, not independently switchable provider slots
+inside one Claude process.
+
+## Permissions
+
+By default, the package starts from Claude Code's normal permission prompts
+even when native `~/.claude/settings.json` selects `bypassPermissions`. A
+persistent, package-scoped opt-in is explicit:
+
+```zsh
+claude-litellm permissions get
+claude-litellm permissions set bypassPermissions
+claude-litellm permissions reset
+```
+
+The setting applies to new `claude-litellm` sessions, survives `sync` and
+reinstall, and never changes native Claude settings. `set default` persists an
+explicit safe user override; `reset` removes that key and inherits the package
+default, which is why `permissions get --json` reports different sources. For
+one session without a durable change, pass `--dangerously-skip-permissions` or
+`--permission-mode bypassPermissions` to the launch command.
 
 ## OAuth
 
@@ -165,7 +198,11 @@ claude-litellm model limits <route>
 claude-litellm model add <openrouter-id> --name <route>
 claude-litellm model register <route> --backend <provider/model> --context N --output N --api-key-env ENV_VAR|none
 claude-litellm model qualify <route> --activate-tier sonnet
+claude-litellm use <route> --default
 claude-litellm model reasoning probe <route> high --candidate
+claude-litellm permissions get
+claude-litellm permissions set bypassPermissions
+claude-litellm permissions reset
 claude-litellm key set --keychain OPENROUTER_API_KEY
 claude-litellm uninstall
 ```
@@ -178,7 +215,7 @@ runtime package-byte drift, and Python imports shadowed by the caller's working
 directory or `PYTHONPATH`.
 
 Package defaults are immutable. `model add/register/remove` and Claude
-alias/reasoning updates write private user overlays under
+alias/reasoning/permission updates write private user overlays under
 `~/.config/claude-litellm`; `sync` renders the effective files consumed by
 LiteLLM and Claude Code. Reinstall replaces package defaults, preserves those
 overlays, and regenerates the effective configuration. Direct edits below the
@@ -224,7 +261,10 @@ availability, or behavioral-effort guarantee.
 
 ## Safety
 
-- The generated Claude settings overlay forces `permissions.defaultMode="default"`.
+- The generated Claude settings overlay uses
+  `permissions.defaultMode="default"` unless the user explicitly persists the
+  narrow `bypassPermissions` opt-in with `claude-litellm permissions set`.
+  Manual edits to the generated overlay are discarded.
 - Provider secrets are resolved at proxy startup from the package env file or
   macOS Keychain (a caller's environment is also accepted but discouraged), and
   are not inherited by tools Claude launches.
