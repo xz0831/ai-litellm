@@ -79,8 +79,9 @@ Claude/tool child environment. Optional declarations are
 user claims. `xhigh` and `max` are rejected for user routes: LiteLLM 1.92
 normalizes those values to `high` when its Anthropic adapter has no matching
 model-registry capability flag, so accepting them would create false choices.
-Qualification tests Anthropic text/tool compatibility, not reasoning-effort
-behavior or provider limit truth.
+Qualification tests Anthropic text/tool compatibility and the gateway policy
+for Claude Code's real adaptive-effort request shape. It does not prove that a
+provider honored a distinct effort level, nor does it prove provider limits.
 
 ## oMLX
 
