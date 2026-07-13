@@ -113,9 +113,10 @@ for the single generated block.
 
 ## Qualification contract
 
-The live command sends four small requests with `max_tokens=128`, plus a
-`max_tokens=512` adaptive-effort request so reasoning-first models have room to
-finish a visible answer. It requires:
+The live command keeps structured tool-call requests at `max_tokens=128`.
+Text SSE, tool-result continuation, and adaptive-effort requests use
+`max_tokens=512` so reasoning-first models have room to finish a visible
+answer. It requires:
 
 1. Anthropic text SSE with a non-empty text delta
 2. Forced tool selection returned as a native `tool_use`

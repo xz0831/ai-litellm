@@ -269,7 +269,7 @@ WEATHER_TOOL = {
 }
 
 LIVE_MAX_TOKENS = 128
-LIVE_ADAPTIVE_EFFORT_MAX_TOKENS = 512
+LIVE_RESPONSE_MAX_TOKENS = 512
 
 
 def _tool_use_block(content: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -479,7 +479,10 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     # Gate 1: Claude Code consumes SSE, so a JSON-only success is insufficient.
     text_status, text_events = post_messages_stream(base, master_key, {
         "model": model,
-        "max_tokens": LIVE_MAX_TOKENS,
+        # Reasoning-first routes may spend the first 128 tokens before their
+        # first visible text delta. This gate tests usable SSE, not how terse a
+        # provider's hidden/default reasoning happens to be.
+        "max_tokens": LIVE_RESPONSE_MAX_TOKENS,
         "messages": [{
             "role": "user",
             "content": "Reply with one short sentence confirming this route is ready.",
@@ -548,7 +551,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
     ):
         continuation_status, continuation_resp = post_messages(base, master_key, {
             "model": model,
-            "max_tokens": LIVE_MAX_TOKENS,
+            "max_tokens": LIVE_RESPONSE_MAX_TOKENS,
             "tools": [WEATHER_TOOL],
             "messages": [
                 {"role": "user", "content": tool_prompt},
@@ -578,7 +581,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
         # Reasoning-first models can legitimately consume the 128-token tool
         # gate budget entirely in a thinking block. Give the real Claude Code
         # request enough room to prove it also reaches a usable text response.
-        "max_tokens": LIVE_ADAPTIVE_EFFORT_MAX_TOKENS,
+        "max_tokens": LIVE_RESPONSE_MAX_TOKENS,
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": "high"},
         "messages": [{
@@ -590,7 +593,7 @@ def run_live_qualification(base: str, master_key: str, model: str) -> dict[str, 
         effort_status == 200 and _text_blocks(effort_resp.get("content", [])).strip()
     )
     result["claude_adaptive_effort_policy_status"] = effort_status
-    result["claude_adaptive_effort_max_tokens"] = LIVE_ADAPTIVE_EFFORT_MAX_TOKENS
+    result["response_max_tokens"] = LIVE_RESPONSE_MAX_TOKENS
 
     gates = (
         "text_sse",
