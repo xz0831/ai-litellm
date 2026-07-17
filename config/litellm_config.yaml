@@ -66,22 +66,23 @@ x-limits:
     x_output_source: owned-policy-local-output-cap
     x_reasoning_confidence: owned-policy
     x_reasoning_source: local-runtime-no-reasoning-routing
-  gpt54_chatgpt_oauth: &gpt54_chatgpt_oauth
+  gpt56_sol_chatgpt_oauth: &gpt56_sol_chatgpt_oauth
     max_input_tokens: 1050000
     max_output_tokens: 128000
     supports_reasoning: true
-    # GPT-5.4 itself reasons and LiteLLM 1.92's chatgpt/* adapter accepts a
-    # reasoning object, but its metadata publishes no selectable effort list
-    # and the subscription backend has not been live-measured. Refuse explicit
-    # effort until login-time qualification establishes the accepted values.
+    # GPT-5.6 Sol supports reasoning and LiteLLM 1.92's chatgpt/* adapter
+    # accepts a reasoning object, but the subscription backend is not an
+    # OpenAI-supported third-party gateway contract and has not been
+    # live-measured. Refuse explicit effort until login-time qualification
+    # establishes the accepted values.
     x_reasoning_efforts: []
     x_input_confidence: provider
-    x_input_source: chatgpt-oauth-model-metadata
+    x_input_source: developers.openai.com GPT-5.6 model guidance
     x_output_confidence: provider
-    x_output_source: chatgpt-oauth-model-metadata
+    x_output_source: developers.openai.com GPT-5.6 model guidance
     x_output_enforcement: provider-natural-cap-only; chatgpt-adapter-strips-token-limit-fields
     x_reasoning_confidence: owned-policy
-    x_reasoning_source: chatgpt-oauth-slot-present-selectable-levels-not-validated
+    x_reasoning_source: openai-docs-efforts; chatgpt-oauth-selectable-levels-not-live-validated
   grok45_xai_oauth: &grok45_xai_oauth
     max_input_tokens: 500000
     max_output_tokens: 32768
@@ -123,10 +124,10 @@ model_list:
 
   # OAuth-backed cloud routes. Authentication is owned by the LiteLLM provider;
   # do not add api_key here or inject OPENAI_API_KEY/XAI_API_KEY at launch.
-  - model_name: GPT-5.4-chatgpt-oauth
+  - model_name: GPT-5.6-Sol-chatgpt-oauth
     litellm_params:
-      model: chatgpt/gpt-5.4
-    model_info: *gpt54_chatgpt_oauth
+      model: chatgpt/gpt-5.6-sol
+    model_info: *gpt56_sol_chatgpt_oauth
 
   - model_name: Grok-4.5-xai-oauth
     litellm_params:

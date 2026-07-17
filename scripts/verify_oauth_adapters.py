@@ -313,7 +313,7 @@ def main() -> int:
                 headers={"content-type": "text/event-stream"},
                 text="",
             ),
-            model="chatgpt/gpt-5.4",
+            model="chatgpt/gpt-5.6-sol",
             responses_api_provider_config=OpenAIResponsesAPIConfig(),
             logging_obj=stream_log,
             custom_llm_provider="chatgpt",
@@ -333,7 +333,7 @@ def main() -> int:
         "object": "response",
         "created_at": 1_700_000_000,
         "status": "completed",
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-sol",
         "output": [],
     }
     with patch.object(stream_iterator, "_handle_logging_completed_response"):
@@ -394,7 +394,7 @@ def main() -> int:
     ]
     original_system_messages = copy.deepcopy(system_messages)
     logging_obj = LiteLLMLoggingObj(
-        model="gpt-5.4",
+        model="gpt-5.6-sol",
         messages=system_messages,
         stream=True,
         call_type="completion",
@@ -403,12 +403,12 @@ def main() -> int:
         function_id="offline-system-block-function",
     )
     common_kwargs = {
-        "model": "gpt-5.4",
+        "model": "gpt-5.6-sol",
         "messages": system_messages,
         "optional_params": {"stream": True},
         "litellm_params": {},
         "headers": {},
-        "model_response": ModelResponse(model="gpt-5.4"),
+        "model_response": ModelResponse(model="gpt-5.6-sol"),
         "logging_obj": logging_obj,
     }
     completion_bridge = ResponsesToCompletionBridgeHandler()
@@ -496,10 +496,10 @@ def main() -> int:
     payload = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
 
-    chatgpt = _route(payload, "GPT-5.4-chatgpt-oauth")
-    assert chatgpt.get("model") == "chatgpt/gpt-5.4"
+    chatgpt = _route(payload, "GPT-5.6-Sol-chatgpt-oauth")
+    assert chatgpt.get("model") == "chatgpt/gpt-5.6-sol"
     assert "api_key" not in chatgpt, "ChatGPT OAuth route must not override OAuth with an API key"
-    assert _route_entry(payload, "GPT-5.4-chatgpt-oauth")["model_info"]["x_reasoning_efforts"] == []
+    assert _route_entry(payload, "GPT-5.6-Sol-chatgpt-oauth")["model_info"]["x_reasoning_efforts"] == []
 
     grok = _route(payload, "Grok-4.5-xai-oauth")
     assert grok.get("model") == "xai/grok-4.5"
@@ -979,7 +979,7 @@ def main() -> int:
             tmp / "proxy-valid-token-startup.log",
         )
         model_ids = {row.get("id") for row in models_payload.get("data", [])}
-        assert "GPT-5.4-chatgpt-oauth" in model_ids
+        assert "GPT-5.6-Sol-chatgpt-oauth" in model_ids
         assert "Grok-4.5-xai-oauth" in model_ids
         assert "Qwen3.6-27B-omlx" in model_ids
 
@@ -1015,7 +1015,7 @@ def main() -> int:
         unauthenticated_ids = {
             row.get("id") for row in unauthenticated_payload.get("data", [])
         }
-        assert "GPT-5.4-chatgpt-oauth" not in unauthenticated_ids, (
+        assert "GPT-5.6-Sol-chatgpt-oauth" not in unauthenticated_ids, (
             "pre-auth bootstrap policy must omit the unavailable ChatGPT deployment"
         )
         expected_non_chatgpt_ids = {

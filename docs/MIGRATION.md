@@ -113,7 +113,7 @@ then qualify every target route against the current six-gate contract:
 claude-litellm auth login chatgpt
 claude-litellm auth login grok
 claude-litellm auth status --json
-claude-litellm model qualify GPT-5.4-chatgpt-oauth
+claude-litellm model qualify GPT-5.6-Sol-chatgpt-oauth
 claude-litellm model qualify Grok-4.5-xai-oauth
 claude-litellm model qualify <other-route>
 ```

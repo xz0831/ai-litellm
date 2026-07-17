@@ -407,7 +407,7 @@ if AI_LITELLM_CONFIG="$effort_transport_drift" ai_litellm_reasoning_effort_metad
   exit 1
 fi
 test "$(ai_litellm_model_reasoning_allowed_efforts Grok-4.5-xai-oauth)" = "low medium high"
-if ai_litellm_model_reasoning_allowed_efforts GPT-5.4-chatgpt-oauth >/dev/null 2>&1; then
+if ai_litellm_model_reasoning_allowed_efforts GPT-5.6-Sol-chatgpt-oauth >/dev/null 2>&1; then
   echo "FAIL: unverified ChatGPT OAuth effort was exposed as configurable" >&2
   exit 1
 fi
@@ -1518,7 +1518,7 @@ ai_litellm_health
 proxy_models="$(ai_litellm_proxy_model_names)"
 [[ "$proxy_models" == *"Qwen3.6-27B-omlx"* ]]
 [[ "$proxy_models" == *"Grok-4.5-xai-oauth"* ]]
-[[ "$proxy_models" != *"GPT-5.4-chatgpt-oauth"* ]]
+[[ "$proxy_models" != *"GPT-5.6-Sol-chatgpt-oauth"* ]]
 test ! -e "$prefix/state/auth/chatgpt/auth.json"
 "$HOME/.local/bin/claude-litellm" proxy stop >/dev/null 2>&1
 test ! -e "$prefix/state/ai-litellm/litellm.pid"

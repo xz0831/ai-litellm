@@ -296,7 +296,7 @@ def main() -> int:
         write_private(root / "user" / "models.json", oci_env_payload)
         invoke(root)
         chatgpt_user_payload = model_payload(api_key="none")
-        chatgpt_user_payload["models"][0]["litellm_params"]["model"] = "chatgpt/gpt-5.4"
+        chatgpt_user_payload["models"][0]["litellm_params"]["model"] = "chatgpt/gpt-5.6-sol"
         write_private(root / "user" / "models.json", chatgpt_user_payload)
         invoke(root, expect_ok=False)
         xai_oauth_user_payload = model_payload(api_key="os.environ/XAI_FALLBACK_API_KEY")

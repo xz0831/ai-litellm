@@ -201,7 +201,7 @@ class OutputClampTests(unittest.TestCase):
 
     def test_chatgpt_stripped_limit_route_reserves_provider_capability(self) -> None:
         kwargs = {
-            "model": "GPT-5.4-chatgpt-oauth",
+            "model": "GPT-5.6-Sol-chatgpt-oauth",
             "model_info": {
                 "max_input_tokens": 1_050_000,
                 "max_output_tokens": 128_000,

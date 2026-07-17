@@ -138,7 +138,7 @@ short direct form are equivalent for one-session launch:
 
 ```zsh
 claude-litellm use fable
-claude-litellm use GPT-5.4-chatgpt-oauth
+claude-litellm use GPT-5.6-Sol-chatgpt-oauth
 claude-litellm Grok-4.5-xai-oauth        # short form remains supported
 claude-litellm use Qwen3.6-27B-omlx
 ```
@@ -350,7 +350,7 @@ means genuinely no authentication, not OAuth.
 - `Mimo-V2.5-openrouter`
 - `Qwen3.6-27B-omlx`
 - `Qwen3.6-35B-A3B-4bit-omlx`
-- `GPT-5.4-chatgpt-oauth`
+- `GPT-5.6-Sol-chatgpt-oauth`
 - `Grok-4.5-xai-oauth`
 
 The packaged tier defaults are `fable` → Kimi, `opus` → GLM, `sonnet` → MiMo,
@@ -387,7 +387,7 @@ availability, or behavioral-effort guarantee.
   guardrails apply separately to every route. Output clamps apply when the
   provider accepts token-limit fields.
   LiteLLM's ChatGPT subscription adapter intentionally strips those fields, so
-  that experimental route relies on GPT-5.4's natural output cap rather than a
+  that experimental route relies on GPT-5.6 Sol's natural output cap rather than a
   lower gateway-enforced cap.
 - Project auth status/JSON and guarded refresh errors do not render ChatGPT or
   Grok OAuth token payloads. Do not enable third-party trace logging around
