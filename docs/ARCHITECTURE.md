@@ -116,7 +116,7 @@ pass before either direct pins or their lock move.
 
 Claude Code and oMLX are external installations rather than files in this
 Python lock. The current compatibility snapshot was exercised with Claude Code
-2.1.207 and oMLX 0.5.1; a later external release requires the same live model
+2.1.212 and oMLX 0.5.1; a later external release requires the same live model
 qualification and smoke checks rather than inheriting that result by version
 assumption.
 
@@ -191,6 +191,22 @@ One Claude process maps every tier and subagent to the initial validated route.
 This is deliberate: effort, compaction, context, and output controls are
 process-global, so an in-session cross-provider switch could retain an invalid
 budget or bypass OAuth/runtime checks. Provider changes are session boundaries.
+
+The task ledger supplies the orchestration boundary above those sessions.
+`task handoff` records a concrete destination route plus bounded goal, decision,
+worktree, commit and test evidence. `task launch` starts a fresh Claude process
+in that worktree and injects the structured handoff prompt. It does not replay
+or translate the previous provider transcript, so different context windows,
+tokenizers, output caps and reasoning controls cannot leak across a provider
+boundary. A local-runtime destination must answer a live route probe before the
+worker is launched; cloud routes are not implicitly probed because that can be
+billable.
+
+This layer intentionally does not schedule machines. Its JSON task/prompt
+surface can be consumed by Orca or another dispatcher that selects a host and
+invokes the same CLI. The dispatcher owns placement and remote execution;
+claude-litellm continues to own catalog resolution, local readiness, gateway
+credentials and the one-route worker contract.
 
 Runtime discovery currently has one generated route block and therefore allows
 only one enabled `discoverModels` runtime. Validation fails closed if multiple

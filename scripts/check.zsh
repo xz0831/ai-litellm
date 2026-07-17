@@ -40,6 +40,7 @@ done
 "$check_python" -m py_compile "$repo_root/scripts/verify_budget_consistency.py"
 "$check_python" -m py_compile "$repo_root/scripts/render-user-config.py"
 "$check_python" -m py_compile "$repo_root/scripts/runtime-fingerprint.py"
+"$check_python" -m py_compile "$repo_root/scripts/task-ledger.py"
 "$check_python" -m py_compile "$repo_root/scripts/verify-install.py"
 "$check_python" -m py_compile "$repo_root/scripts/verify_user_config_overlay.py"
 
@@ -322,6 +323,7 @@ test -f "$prefix/config/ai_litellm_callbacks/output_clamp.py"
 test -f "$prefix/config/ai_litellm_callbacks/chatgpt_stream_compat.py"
 test -f "$prefix/config/ai_litellm_callbacks/proxy_bootstrap.py"
 test -x "$prefix/scripts/verify_tool_call_fidelity.py"
+test -x "$prefix/scripts/task-ledger.py"
 test -x "$prefix/scripts/uninstall.zsh"
 test -x "$prefix/bin/claude-litellm"
 test -x "$HOME/.local/bin/claude-litellm"
@@ -647,9 +649,49 @@ echo "ok: key set stores newline-less piped secret in trusted state only"
 usage_out="$("$HOME/.local/bin/claude-litellm" --help 2>&1)"
 [[ "$usage_out" == *"fable|opus|sonnet|haiku|model_name"* ]] || { echo "FAIL: public help missing launch models" >&2; exit 1; }
 [[ "$usage_out" == *"auth login|status|logout"* ]]            || { echo "FAIL: public help missing OAuth controls" >&2; exit 1; }
-[[ "$usage_out" == *"status|doctor|sync|proxy|model|key"* ]]  || { echo "FAIL: public help missing control nouns" >&2; exit 1; }
+[[ "$usage_out" == *"status|doctor|sync|proxy|model|task|key"* ]] || { echo "FAIL: public help missing control nouns" >&2; exit 1; }
+[[ "$usage_out" == *"task create|handoff|launch|complete"* ]] || { echo "FAIL: public help missing task orchestration" >&2; exit 1; }
 [[ "$usage_out" == *"All providers and local runtimes"* ]]    || { echo "FAIL: public help missing proxy contract" >&2; exit 1; }
 echo "ok: public help surface"
+
+# Task handoffs normalize presets to concrete catalog routes and keep their
+# durable ledger private. A failed local live probe blocks the worker before
+# Claude starts; a passing probe launches in the recorded worktree.
+task_worktree="$HOME/task-worktree"
+mkdir -p "$task_worktree"
+task_id="$("$HOME/.local/bin/claude-litellm" task create smoke \
+  --goal task_handoff_smoke --worktree "$task_worktree")"
+"$HOME/.local/bin/claude-litellm" task handoff "$task_id" \
+  --to haiku --objective review_local_route --summary prior_worker_done >/dev/null
+task_plan="$("$HOME/.local/bin/claude-litellm" task prompt "$task_id" --json)"
+[[ "$(print -r -- "$task_plan" | jq -r .route)" == "Qwen3.6-27B-omlx" ]] || { echo "FAIL: task handoff did not normalize preset route" >&2; exit 1; }
+[[ "$(print -r -- "$task_plan" | jq -r .worktree)" == "$task_worktree" ]] || { echo "FAIL: task handoff lost worktree" >&2; exit 1; }
+test "$(stat -f %Lp "$prefix/state/claude-litellm/tasks")" = "700"
+test "$(stat -f %Lp "$prefix/state/claude-litellm/tasks/$task_id.json")" = "600"
+(
+  source "$prefix/config/claude-litellm/shell.zsh"
+  ai_litellm_model_runtime() { print -r -- omlx; }
+  ai_litellm_model_runtime_ready() { return 0; }
+  ai_litellm_start() { return 0; }
+  ai_litellm_probe_route() { return 1; }
+  _claude_litellm_launch_proxy() { echo "FAIL: worker launched after failed local probe" >&2; return 99; }
+  ! claude-litellm task launch "$task_id" -- --print >/dev/null 2>&1
+)
+task_launch_out="$(
+  source "$prefix/config/claude-litellm/shell.zsh"
+  ai_litellm_model_runtime() { print -r -- omlx; }
+  ai_litellm_model_runtime_ready() { return 0; }
+  ai_litellm_start() { return 0; }
+  ai_litellm_probe_route() { return 0; }
+  _claude_litellm_launch_proxy() { local route="$1"; shift; print -r -- "launch:$route:$PWD:$*"; }
+  claude-litellm task launch "$task_id" -- --print
+)"
+[[ "$task_launch_out" == *"launch:Qwen3.6-27B-omlx:$task_worktree:"* ]] || { echo "FAIL: task worker did not launch concrete route in worktree" >&2; exit 1; }
+[[ "$task_launch_out" == *"review_local_route"* ]] || { echo "FAIL: task worker did not receive bounded handoff prompt" >&2; exit 1; }
+"$HOME/.local/bin/claude-litellm" task complete "$task_id" \
+  --summary worker_done --tests focused_tests --close >/dev/null
+[[ "$("$HOME/.local/bin/claude-litellm" task show "$task_id" --json | jq -r .status)" == "completed" ]] || { echo "FAIL: task completion did not close ledger" >&2; exit 1; }
+echo "ok: model-session task handoff and local readiness gate"
 
 # H6 REVERSAL (P4): route is retired entirely (absorbed into model: see the
 # retired-surfaces loud-fail block above), so probe returns to model as the
@@ -1676,6 +1718,7 @@ jq -e '
     "scripts/migrate-legacy.zsh",
     "scripts/render-user-config.py",
     "scripts/runtime-fingerprint.py",
+    "scripts/task-ledger.py",
     "scripts/verify-install.py",
     "scripts/uninstall.zsh",
     "scripts/verify_tool_call_fidelity.py"

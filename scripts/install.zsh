@@ -1093,6 +1093,7 @@ initialize_package_layout() {
     scripts/migrate-legacy.zsh
     scripts/render-user-config.py
     scripts/runtime-fingerprint.py
+    scripts/task-ledger.py
     scripts/verify-install.py
     scripts/verify_tool_call_fidelity.py
     scripts/uninstall.zsh
@@ -1114,6 +1115,7 @@ initialize_package_layout() {
     scripts/migrate-legacy.zsh
     scripts/render-user-config.py
     scripts/runtime-fingerprint.py
+    scripts/task-ledger.py
     scripts/verify-install.py
     scripts/verify_tool_call_fidelity.py
     scripts/uninstall.zsh
@@ -1885,6 +1887,7 @@ for file in \
   "$repo_root/scripts/migrate-legacy.zsh" \
   "$repo_root/scripts/render-user-config.py" \
   "$repo_root/scripts/runtime-fingerprint.py" \
+  "$repo_root/scripts/task-ledger.py" \
   "$repo_root/scripts/verify-install.py" \
   "$repo_root/scripts/verify_tool_call_fidelity.py" \
   "$repo_root/scripts/uninstall.zsh"; do
@@ -2036,6 +2039,7 @@ install_executable "$repo_root/bin/claude-litellm" "$prefix/bin/claude-litellm"
 install_executable "$repo_root/scripts/migrate-legacy.zsh" "$prefix/scripts/migrate-legacy.zsh"
 install_executable "$repo_root/scripts/render-user-config.py" "$prefix/scripts/render-user-config.py"
 install_executable "$repo_root/scripts/runtime-fingerprint.py" "$prefix/scripts/runtime-fingerprint.py"
+install_executable "$repo_root/scripts/task-ledger.py" "$prefix/scripts/task-ledger.py"
 install_executable "$repo_root/scripts/verify-install.py" "$prefix/scripts/verify-install.py"
 install_executable "$repo_root/scripts/verify_tool_call_fidelity.py" "$prefix/scripts/verify_tool_call_fidelity.py"
 install_executable "$repo_root/scripts/uninstall.zsh" "$prefix/scripts/uninstall.zsh"

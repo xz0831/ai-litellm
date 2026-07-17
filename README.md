@@ -100,6 +100,46 @@ default preset only on PASS. Run `claude-litellm` afterward. The four preset
 names remain launch conveniences, not independently switchable provider slots
 inside one Claude process.
 
+## Model-session tasks
+
+For work that should move between providers, use a task as the durable boundary
+above individual Claude sessions:
+
+```zsh
+task_id="$(claude-litellm task create gateway-review \
+  --goal 'Review the gateway migration and finish local-model readiness checks' \
+  --worktree "$PWD")"
+
+claude-litellm task handoff "$task_id" \
+  --from GLM-5.2-openrouter \
+  --to local-omlx-gemma4-12b-omlx \
+  --objective 'Review the local runtime path and run focused tests' \
+  --summary 'Migration is complete; local route readiness must be rechecked' \
+  --commit "$(git rev-parse HEAD)" \
+  --tests './scripts/check.zsh passed before this handoff'
+
+claude-litellm task launch "$task_id" -- --print
+claude-litellm task complete "$task_id" \
+  --summary 'Local review completed; see the recorded test evidence' \
+  --tests './scripts/check.zsh'
+```
+
+`task launch` always opens a new Claude process pinned to the concrete route
+recorded by the handoff. It renders a bounded prompt from the task goal,
+worktree, prior decisions, commit and test evidence instead of copying a
+provider transcript. For routes owned by a local runtime, launch first issues a
+small live probe and refuses a model that is merely discoverable but not able
+to answer. Cloud routes are not automatically probed, because that would create
+an implicit billable request.
+
+The ledger is private state under the installed package and supports
+`task list`, `task show`, and `task prompt --json`. That JSON surface is the
+intended integration point for an external scheduler: a future Orca deployment
+can choose a Mac and invoke the same handoff/launch contract, while
+claude-litellm remains responsible for route validation and one-model process
+configuration. Machine placement and automatic load balancing are not provided
+by claude-litellm itself.
+
 ## Permissions
 
 By default, the package starts from Claude Code's normal permission prompts
@@ -199,6 +239,10 @@ claude-litellm model add <openrouter-id> --name <route>
 claude-litellm model register <route> --backend <provider/model> --context N --output N --api-key-env ENV_VAR|none
 claude-litellm model qualify <route> --activate-tier sonnet
 claude-litellm use <route> --default
+claude-litellm task create <name> --goal <text> [--worktree <path>]
+claude-litellm task handoff <id> --to <route> --objective <text>
+claude-litellm task launch <id> [-- <claude args>]
+claude-litellm task complete <id> --summary <text> [--close]
 claude-litellm model reasoning probe <route> high --candidate
 claude-litellm permissions get
 claude-litellm permissions set bypassPermissions
@@ -336,7 +380,7 @@ Reasoning support does not automatically imply an effort-control slot. The
 wrapper validates model-specific effort levels and refuses unsupported
 `--effort` values instead of silently dropping them.
 
-Claude Code 2.1.207 also emits `thinking: {type: adaptive}` with
+Claude Code 2.1.212 also emits `thinking: {type: adaptive}` with
 `output_config.effort` even when the user did not pass `--effort`. On a route
 with no validated selectable slot, the wrapper warns and the gateway removes
 only the effort selection while retaining adaptive/provider-default reasoning.

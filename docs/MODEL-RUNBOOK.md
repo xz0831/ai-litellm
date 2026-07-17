@@ -240,7 +240,7 @@ claude-litellm harness reasoning unset claude
 ```
 
 The harness default is durable and becomes Claude Code's `--effort` intent. An
-explicit unsupported `--effort` fails before proxy startup. Claude Code 2.1.207
+explicit unsupported `--effort` fails before proxy startup. Claude Code 2.1.212
 also sends an implicit `high` effort with adaptive thinking when neither a flag
 nor setting is present, so the absence of a CLI flag is not the absence of
 effort on the wire. The wrapper warns when a selected route has no selectable

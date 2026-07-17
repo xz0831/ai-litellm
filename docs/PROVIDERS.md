@@ -147,7 +147,7 @@ proxy. This makes a missing provider slot observable instead of allowing
 LiteLLM's broad `drop_params` compatibility policy to create a false impression
 that the model searched or reasoned more deeply.
 
-Claude Code 2.1.207 sends adaptive thinking plus `output_config.effort` even
+Claude Code 2.1.212 sends adaptive thinking plus `output_config.effort` even
 without an explicit flag. The wrapper treats that shared/default value as
 intent and applies the selected route contract:
 

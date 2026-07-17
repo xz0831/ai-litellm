@@ -30,6 +30,8 @@ if [[ -f "$AI_LITELLM_HOME/install-manifest.json" && \
   export AI_LITELLM_REASONING_OBS_FILE="$AI_LITELLM_HOME/state/ai-litellm/reasoning-observations.json"
   export AI_LITELLM_CONTEXT_OBS_SEED="$AI_LITELLM_HOME/config/ai-litellm/context-observations.json"
   export AI_LITELLM_CONTEXT_OBS_FILE="$AI_LITELLM_HOME/state/ai-litellm/context-observations.json"
+  export AI_LITELLM_TASKS_HOME="$AI_LITELLM_HOME/state/claude-litellm/tasks"
+  export AI_LITELLM_TASK_LEDGER="$AI_LITELLM_HOME/scripts/task-ledger.py"
   export AI_LITELLM_LIFECYCLE_LOCK="${AI_LITELLM_HOME:h}/.${AI_LITELLM_HOME:t}.install.lock"
   export AI_LITELLM_LEGACY_ENV="$HOME/.config/ai-litellm/env"
   export AI_LITELLM_LEGACY_PID_FILE="$AI_LITELLM_HOME/state/ai-litellm/.legacy-ai-litellm.pid"
@@ -75,6 +77,8 @@ export AI_LITELLM_STARTED_AT_FILE="${AI_LITELLM_STARTED_AT_FILE:-$AI_LITELLM_PRO
 export AI_LITELLM_REASONING_OBS_FILE="${AI_LITELLM_REASONING_OBS_FILE:-$AI_LITELLM_PROXY_HOME/reasoning-observations.json}"
 export AI_LITELLM_CONTEXT_OBS_SEED="${AI_LITELLM_CONTEXT_OBS_SEED:-$AI_LITELLM_CONFIG_HOME/ai-litellm/context-observations.json}"
 export AI_LITELLM_CONTEXT_OBS_FILE="${AI_LITELLM_CONTEXT_OBS_FILE:-$AI_LITELLM_PROXY_HOME/context-observations.json}"
+export AI_LITELLM_TASKS_HOME="${AI_LITELLM_TASKS_HOME:-$AI_LITELLM_STATE_HOME/claude-litellm/tasks}"
+export AI_LITELLM_TASK_LEDGER="${AI_LITELLM_TASK_LEDGER:-$AI_LITELLM_HOME/scripts/task-ledger.py}"
 export AI_LITELLM_LOCK_MAX_AGE_SECONDS="${AI_LITELLM_LOCK_MAX_AGE_SECONDS:-300}"
 export AI_LITELLM_LEGACY_ENV="${AI_LITELLM_LEGACY_ENV:-$HOME/.config/ai-litellm/env}"
 export AI_LITELLM_LEGACY_PID_FILE="${AI_LITELLM_LEGACY_PID_FILE:-$HOME/.config/ai-litellm/litellm.pid}"
@@ -8308,6 +8312,48 @@ ai_litellm_cmd_model() {
   esac
 }
 
+ai_litellm_task_ledger() {
+  local script="$AI_LITELLM_TASK_LEDGER"
+  [[ -f "$script" && ! -L "$script" ]] || {
+    echo "Missing managed task ledger: $script" >&2
+    return 1
+  }
+
+  local python="$AI_LITELLM_HOME/runtime/venv/bin/python"
+  if [[ ! -x "$python" ]]; then
+    python="$(ai_litellm_external_python 2>/dev/null)" || {
+      echo "Python 3.13 is required for task orchestration." >&2
+      return 1
+    }
+  fi
+  ai_litellm_python_isolated "$python" -S "$script" --root "$AI_LITELLM_TASKS_HOME" "$@"
+}
+
+ai_litellm_cmd_task() {
+  case "${1:-}" in
+    create|list|show|handoff|complete|prompt|_mark-launched)
+      ai_litellm_task_ledger "$@"
+      ;;
+    -h|--help|"")
+      cat <<'EOF'
+Usage: claude-litellm task create <name> --goal <text> [--worktree <path>]
+       claude-litellm task handoff <id> --to <route> --objective <text> [evidence]
+       claude-litellm task launch <id> [--handoff <n|latest>] [-- <claude args>]
+       claude-litellm task complete <id> --summary <text> [--close]
+       claude-litellm task list|show <id>|prompt <id> [--json]
+
+Each launch creates a new Claude process pinned to one route. The task ledger
+passes bounded goals, decisions, worktree and test/commit evidence between
+model-specific sessions; it never attempts to transplant a provider transcript.
+EOF
+      ;;
+    *)
+      echo "Usage: claude-litellm task create|list|show|handoff|launch|complete|prompt ..." >&2
+      return 1
+      ;;
+  esac
+}
+
 ai_litellm_cmd_key() {
   local verb="$1"; [[ $# -gt 0 ]] && shift
   case "$verb" in
@@ -8483,6 +8529,7 @@ Usage: claude-litellm <group> <verb> [args]
                  claude-litellm model reasoning probe <model> [effort] [--candidate]
                  claude-litellm model reasoning set <model> <effort>
                  claude-litellm model reasoning unset <model>
+  Task:          claude-litellm task create|list|show|handoff|launch|complete|prompt
   Context:       claude-litellm context matrix [filter]|probe <surface|all>|observations [filter]
   Reasoning:     claude-litellm reasoning matrix [model]|probe <model> [effort]
   Doctor:        claude-litellm doctor [--proxy|--context|--reasoning|--policy|--runtime <name>]
@@ -8510,6 +8557,7 @@ ai_litellm() {
     harness)      ai_litellm_cmd_harness "$@" ;;
     runtime)      ai_litellm_cmd_runtime "$@" ;;
     model)        ai_litellm_cmd_model "$@" ;;
+    task)         ai_litellm_cmd_task "$@" ;;
     context)      ai_litellm_cmd_context "$@" ;;
     reasoning)    ai_litellm_cmd_reasoning "$@" ;;
     doctor)       ai_litellm_cmd_doctor "$@" ;;

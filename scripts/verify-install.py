@@ -51,6 +51,7 @@ EXPECTED_PACKAGE_FILES = {
     "scripts/migrate-legacy.zsh",
     "scripts/render-user-config.py",
     "scripts/runtime-fingerprint.py",
+    "scripts/task-ledger.py",
     "scripts/verify-install.py",
     "scripts/verify_tool_call_fidelity.py",
     "scripts/uninstall.zsh",

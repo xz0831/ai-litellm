@@ -642,6 +642,138 @@ EOF
   _claude_litellm_launch_proxy "$selector" "$@"
 }
 
+_claude_litellm_task_handoff() {
+  local -a normalized
+  local selector="" target=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --to)
+        (( $# >= 2 )) || {
+          echo "claude-litellm task handoff: --to requires a route." >&2
+          return 1
+        }
+        selector="$2"
+        target="$(_claude_litellm_target_model_for_request "$selector")" || {
+          echo "Unknown handoff route: $selector" >&2
+          return 1
+        }
+        normalized+=(--to "$target")
+        shift 2
+        ;;
+      --to=*)
+        selector="${1#--to=}"
+        target="$(_claude_litellm_target_model_for_request "$selector")" || {
+          echo "Unknown handoff route: $selector" >&2
+          return 1
+        }
+        normalized+=("--to=$target")
+        shift
+        ;;
+      *)
+        normalized+=("$1")
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$target" ]] || {
+    echo "claude-litellm task handoff: --to <route> is required." >&2
+    return 1
+  }
+  ai_litellm task handoff "${normalized[@]}"
+}
+
+_claude_litellm_task_launch() {
+  if [[ -z "${1:-}" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF'
+Usage: claude-litellm task launch <id> [--handoff <n|latest>]
+       [--skip-local-readiness-check] [-- <claude args...>]
+
+Launch a new Claude process in the task worktree, pinned to the handoff route.
+Local runtime routes receive a live, non-billable probe before Claude starts.
+Use --skip-local-readiness-check only to diagnose a route whose probe is known
+to be incompatible. Arguments for Claude must follow --.
+EOF
+    [[ -n "${1:-}" ]] && return 0
+    return 1
+  fi
+
+  local task_id="$1" handoff="latest" skip_readiness=0
+  shift
+  local -a claude_args
+  while (( $# > 0 )); do
+    case "$1" in
+      --handoff)
+        (( $# >= 2 )) || {
+          echo "claude-litellm task launch: --handoff requires an index or latest." >&2
+          return 1
+        }
+        handoff="$2"
+        shift 2
+        ;;
+      --handoff=*)
+        handoff="${1#--handoff=}"
+        shift
+        ;;
+      --skip-local-readiness-check)
+        skip_readiness=1
+        shift
+        ;;
+      --)
+        shift
+        claude_args=("$@")
+        break
+        ;;
+      *)
+        echo "claude-litellm task launch: unknown option before --: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  local plan route target_model worktree prompt
+  plan="$(ai_litellm task prompt "$task_id" --handoff "$handoff" --json)" || return $?
+  route="$(print -r -- "$plan" | jq -er '.route')" || return 1
+  worktree="$(print -r -- "$plan" | jq -er '.worktree')" || return 1
+  prompt="$(print -r -- "$plan" | jq -er '.prompt')" || return 1
+  [[ -d "$worktree" ]] || {
+    echo "Task worktree is no longer a directory: $worktree" >&2
+    return 1
+  }
+  target_model="$(_claude_litellm_target_model_for_request "$route")" || {
+    echo "Task handoff route is no longer registered: $route" >&2
+    return 1
+  }
+
+  local runtime=""
+  runtime="$(ai_litellm_model_runtime "$target_model" 2>/dev/null || true)"
+  if [[ -n "$runtime" && "$skip_readiness" -eq 0 ]]; then
+    echo "Checking local route readiness before starting a new worker: $target_model"
+    ai_litellm_model_runtime_ready "$target_model" || return $?
+    ai_litellm_start >/dev/null || return $?
+    ai_litellm_probe_route "$target_model" || {
+      echo "Refusing task launch because local route '$target_model' did not answer a live probe." >&2
+      echo "Fix the runtime/model, choose another handoff route, or explicitly pass --skip-local-readiness-check for diagnostics." >&2
+      return 1
+    }
+  fi
+
+  ai_litellm task _mark-launched "$task_id" --handoff "$handoff" || return $?
+  (
+    cd "$worktree" || return 1
+    _claude_litellm_launch_proxy "$target_model" "${claude_args[@]}" "$prompt"
+  )
+}
+
+_claude_litellm_task() {
+  local verb="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$verb" in
+    launch)  _claude_litellm_task_launch "$@" ;;
+    handoff) _claude_litellm_task_handoff "$@" ;;
+    *)       ai_litellm task "$verb" "$@" ;;
+  esac
+}
+
 claude-litellm() {
   if ! typeset -f ai_litellm >/dev/null 2>&1; then
     echo "Missing shared LiteLLM library: $AI_LITELLM_CONFIG_HOME/ai-litellm/lib.zsh" >&2
@@ -653,8 +785,9 @@ claude-litellm() {
       echo "Usage: claude-litellm use <tier-or-route> [claude args...]"
       echo "       claude-litellm [fable|opus|sonnet|haiku|model_name] [claude args...]"
       echo "       claude-litellm use <registered-route> --default"
+      echo "       claude-litellm task create|handoff|launch|complete ..."
       echo "       claude-litellm auth login|status|logout [chatgpt|grok]"
-      echo "       claude-litellm status|doctor|sync|proxy|model|key|runtime|context|reasoning|permissions ..."
+      echo "       claude-litellm status|doctor|sync|proxy|model|task|key|runtime|context|reasoning|permissions ..."
       echo "       claude-litellm --list"
       echo "All providers and local runtimes are routed through the LiteLLM proxy."
       return 0
@@ -683,6 +816,11 @@ claude-litellm() {
     use)
       shift
       _claude_litellm_use "$@"
+      return $?
+      ;;
+    task)
+      shift
+      _claude_litellm_task "$@"
       return $?
       ;;
     status)
