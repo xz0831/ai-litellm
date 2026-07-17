@@ -11,6 +11,75 @@ This project wraps Claude Code only. It does not replace native `claude`, modify
 native `~/.claude`, or wrap Codex. Removing the Codex compatibility layer keeps
 the product on one stable protocol: Anthropic Messages into LiteLLM.
 
+## Architecture at a glance
+
+```mermaid
+flowchart TB
+    Operator["User or automation"]
+    Orca["External scheduler<br/>Orca or another dispatcher"]
+
+    subgraph Control["claude-litellm control plane"]
+        direction LR
+        CLI["claude-litellm CLI"]
+        Catalog["Route catalog, limits,<br/>qualification evidence"]
+        Renderer["Validated config renderer"]
+        Ledger["Task ledger<br/>goal, decisions, commit, tests"]
+        Lifecycle["Proxy and session lifecycle"]
+
+        CLI --> Catalog
+        CLI --> Ledger
+        Catalog --> Renderer
+        Renderer --> Lifecycle
+        Ledger -. "handoff selects route and host" .-> Lifecycle
+    end
+
+    subgraph Session["One model-pinned Claude session"]
+        direction LR
+        Claude["Claude Code process<br/>one concrete route"]
+        Proxy["Managed LiteLLM proxy<br/>single process on localhost"]
+
+        Claude -->|"Anthropic Messages + master key"| Proxy
+    end
+
+    subgraph Providers["Provider and runtime data plane"]
+        direction LR
+        OpenRouter["OpenRouter and<br/>API-key providers"]
+        ChatGPT["ChatGPT OAuth"]
+        Grok["xAI OAuth"]
+        OMLX["Local oMLX runtime<br/>Gemma, Qwen, and others"]
+    end
+
+    PrivateState["Private local state<br/>user config · secrets · OAuth tokens · isolated Claude history"]
+
+    Operator --> CLI
+    Orca -. "task JSON and CLI contract" .-> Ledger
+    Lifecycle -->|"starts a new process for the selected route"| Claude
+    Lifecycle --> Proxy
+    Proxy --> OpenRouter
+    Proxy --> ChatGPT
+    Proxy --> Grok
+    Proxy --> OMLX
+    Renderer -. "writes validated policy" .-> PrivateState
+    PrivateState -. "supplies credentials" .-> Proxy
+    Claude -. "writes session state" .-> PrivateState
+
+    classDef boundary fill:#f6f8fa,stroke:#57606a,color:#24292f;
+    classDef runtime fill:#ddf4ff,stroke:#0969da,color:#24292f;
+    classDef state fill:#fff8c5,stroke:#9a6700,color:#24292f;
+    class CLI,Catalog,Renderer,Ledger,Lifecycle boundary;
+    class Claude,Proxy,OpenRouter,ChatGPT,Grok,OMLX runtime;
+    class PrivateState state;
+```
+
+The request path is always `Claude Code -> localhost LiteLLM -> one validated
+route`. A Claude process never changes providers in place: route limits,
+context policy, reasoning controls, credentials, and generated settings are
+fixed when that process starts. Cross-provider work uses the task ledger as a
+durable handoff boundary and launches a new model-pinned process. An external
+scheduler may choose the Mac and invoke that contract, while claude-litellm
+continues to own route validation, local readiness, credentials, and gateway
+lifecycle.
+
 ## Install
 
 Requirements: macOS, Claude Code, Python 3.13.x, Rust/Cargo, `jq`, `node`,
